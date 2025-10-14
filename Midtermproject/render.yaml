@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: podcast-recs-streamlit
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /

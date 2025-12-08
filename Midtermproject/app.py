@@ -72,7 +72,7 @@ def get_together_client():
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = "data"
 PODCASTS_CSV = os.path.join(DATA_DIR, "sample_podcasts.csv")
 REVIEWS_JSON = os.path.join(DATA_DIR, "reviews.json")
 

@@ -41,8 +41,8 @@ from together import Together
 # Together API key configuration
 # -----------------------------
 # Recommended: set TOGETHER_API_KEY as an environment variable.
-# Optional: for local demos only, you can paste your key here.
-# !!! Do NOT commit your real key with this file to any public repo !!!
+# Optional (LOCAL ONLY): you can paste your key here for quick testing.
+# !!! Do NOT commit a real key with this file to a public repo !!!
 TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  # e.g. "tg-XXXXXXXXXXXXXXXXXXXXXXXX"
 
 
@@ -344,15 +344,12 @@ def smooth_duration_score(d, target_min, target_max):
     if target_min <= d <= target_max:
         return 1.0
     if d < target_min:
-        # linear drop to 0 at 0 minutes
         return max(0.0, 1.0 - (target_min - d) / max(target_min, 1.0))
     else:
-        # d > target_max, drop to 0 at 90 minutes
         return max(0.0, 1.0 - (d - target_max) / max(90 - target_max, 1.0))
 
 
 def compute_duration_fit(duration_min, slider_min, slider_max):
-    # penalty relative to user-selected duration range
     if pd.isna(duration_min):
         return 0.0
     d = float(duration_min)
@@ -410,7 +407,6 @@ def compute_activity_fit(row, activity, workout_mode):
             dur_score = min(1.0, dur_score + 0.2)
         matches = len(tag_set & SLEEP_TAGS)
         tag_score = min(1.0, matches / 2.0)
-        # penalty for high-energy / comedy
         penalty = 0.3 + float(st.session_state.get("sleep_penalty_extra", 0.0))
         if tag_set & FOCUS_NEG_TAGS or tag_set & WORKOUT_TAGS:
             tag_score -= penalty
@@ -487,6 +483,8 @@ def mmr_select(candidates_df, relevance, sim_matrix, lambda_div):
     if n == 0:
         return []
 
+    relevance = np.asarray(relevance, dtype=float)
+
     selected = []
     remaining = list(range(n))
     show_counts = {}
@@ -501,7 +499,6 @@ def mmr_select(candidates_df, relevance, sim_matrix, lambda_div):
             show_id = row["show_id"]
             ep_id = row["episode_id"]
 
-            # no more than 2 episodes per show in Top-5
             if len(selected) < 5 and show_counts.get(show_id, 0) >= 2:
                 continue
 
@@ -511,7 +508,6 @@ def mmr_select(candidates_df, relevance, sim_matrix, lambda_div):
                 max_sim = max(sim_matrix[i][j] for j in selected)
                 score = lambda_div * relevance[i] - (1.0 - lambda_div) * max_sim
 
-            # novelty: slightly penalize items already shown this session
             if lambda_div >= 0.5 and ep_id in shown_items:
                 score -= 0.02
 
@@ -520,7 +516,6 @@ def mmr_select(candidates_df, relevance, sim_matrix, lambda_div):
                 best_idx = i
 
         if best_idx is None:
-            # fallback: pick highest relevance remaining
             best_idx = max(remaining, key=lambda idx: relevance[idx])
 
         selected.append(best_idx)
@@ -575,7 +570,6 @@ def because_you_liked(row, podcasts_df):
         }
         if row_tags & liked_tags:
             suggestions.append(liked_row["show_title"])
-    # unique and up to 2
     suggestions = list(dict.fromkeys(suggestions))[:2]
     return suggestions
 
@@ -609,20 +603,17 @@ def build_explain_data(row, podcasts_df, vectorizer, X, query):
 
     top_terms = get_top_terms_for_row(row, vectorizer, X, top_k=20)
 
-    # interest overlap
     interest_weights = {}
     for source in ("chip_interest_terms", "feedback_interest_terms"):
         for term, w in st.session_state.get(source, {}).items():
             interest_weights[term] = interest_weights.get(term, 0.0) + float(w)
-    interest_terms = [t for t in top_terms if t in interest_weights]
-    interest_terms = interest_terms[:5]
+    interest_terms = [t for t in top_terms if t in interest_weights][:5]
 
     tags = [
         t.strip().lower()
         for t in str(row.get("tags", "")).split(",")
         if t.strip()
     ]
-    tag_set = set(tags)
 
     if activity == "Sleep":
         activity_keywords = [t for t in tags if t in SLEEP_TAGS][:5]
@@ -633,7 +624,7 @@ def build_explain_data(row, podcasts_df, vectorizer, X, query):
     elif activity == "Commute":
         activity_keywords = [t for t in tags if t in COMMUTE_TAGS][:5]
     else:
-        activity_keywords = list(tag_set)[:5]
+        activity_keywords = list(set(tags))[:5]
 
     query_terms = []
     if query:
@@ -658,28 +649,45 @@ def build_explain_data(row, podcasts_df, vectorizer, X, query):
 # -----------------------------
 
 def summarize_reviews(show_id, show_title):
+    """
+    Делает краткое саммари отзывов по подкасту (show_id) на основе reviews.json
+    с помощью Together LLM.
+
+    Возвращает текст саммари и кеширует результат в session_state.
+    """
     cache = st.session_state.llm_summaries
     if show_id in cache:
         return cache[show_id]
 
-    reviews = [r for r in load_reviews() if r.get("podcast_id") == show_id]
+    all_reviews = load_reviews()
+    show_id_str = str(show_id)
+    reviews = [r for r in all_reviews if str(r.get("podcast_id")) == show_id_str]
+
     if not reviews:
-        summary = "No user reviews available yet."
+        summary = "No user reviews available yet for this podcast."
         cache[show_id] = summary
         st.session_state.llm_summaries = cache
         return summary
 
-    # Take up to 20 most recent reviews
-    reviews_sorted = sorted(reviews, key=lambda r: r.get("created_at", ""))
+    def _get_created_at(r):
+        return r.get("created_at") or ""
+
+    reviews_sorted = sorted(reviews, key=_get_created_at)
     recent = reviews_sorted[-20:]
 
     snippets = []
+    ratings = []
     for r in recent:
         title = (r.get("title") or "").strip()
         content = (r.get("content") or "").strip()
-        rating = r.get("rating", "")
+        rating = r.get("rating", None)
+        if rating is not None:
+            try:
+                ratings.append(float(rating))
+            except Exception:
+                pass
         parts = []
-        if rating != "":
+        if rating is not None:
             parts.append(f"Rating {rating}/5")
         if title:
             parts.append(title)
@@ -689,10 +697,17 @@ def summarize_reviews(show_id, show_title):
 
     reviews_block = "\n".join(f"- {s}" for s in snippets)
 
+    avg_rating_text = ""
+    if ratings:
+        avg_rating = sum(ratings) / len(ratings)
+        avg_rating_text = f"Average rating in this sample: {avg_rating:.2f}/5.\n"
+
     prompt = f"""You are an assistant summarizing user reviews for a podcast.
 
 Podcast title: {show_title}
+Podcast id: {show_id_str}
 
+{avg_rating_text}
 Here are some user reviews (each bullet is one review; they may disagree):
 
 {reviews_block}
@@ -700,7 +715,7 @@ Here are some user reviews (each bullet is one review; they may disagree):
 Task:
 - Summarize the overall listener opinion in 2–3 concise sentences.
 - Mention both positive and negative aspects if they appear.
-- Highlight recurring themes (e.g., pace, depth, host style, audio quality).
+- Highlight recurring themes (e.g., pace, depth, host style, audio quality, bias, production).
 - Do not include user names or any personal identifiers.
 - Keep a neutral, analytical tone (not promotional)."""
 
@@ -727,7 +742,7 @@ Task:
             item_id=show_id,
             extra={"error": str(e)},
         )
-        return "Couldn't load review summary. Please try again later."
+        return "Couldn't load review summary from LLM. Please try again later."
 
 
 # -----------------------------
@@ -753,7 +768,6 @@ def handle_dislike(row, activity_label, reason, vectorizer, X):
     top_terms = get_top_terms_for_row(row, vectorizer, X, top_k=10)
 
     if reason == "Too long":
-        # shift preferred window shorter for this activity
         db = st.session_state.duration_bias
         db[activity_label] = db.get(activity_label, 0.0) - 5.0
         st.session_state.duration_bias = db
@@ -761,7 +775,6 @@ def handle_dislike(row, activity_label, reason, vectorizer, X):
         add_feedback_interest(top_terms, delta=-0.7)
         st.session_state.disliked_shows.add(show_id)
     elif reason == "Too intense for sleep":
-        # stronger penalty for high-energy tags in Sleep
         st.session_state.sleep_penalty_extra = st.session_state.get(
             "sleep_penalty_extra", 0.0
         ) + 0.3
@@ -796,26 +809,24 @@ def recommend(
 
     candidates = podcasts_df.copy()
 
-    # Language filter
     if language != "Any":
         candidates = candidates[
             candidates["language"].str.lower() == language.lower()
         ]
 
-    # Safety: Sleep & Focus hide explicit episodes
     if activity in ("Sleep", "Focus"):
         candidates = candidates[candidates["explicit"] == 0]
 
-    # "New" filter
     if is_new_only:
         cutoff = now - pd.Timedelta(days=30)
         candidates = candidates[candidates["publish_ts"] >= cutoff]
 
-    # Fallback if too strict
     if candidates.empty:
         candidates = podcasts_df.copy()
         if activity in ("Sleep", "Focus"):
             candidates = candidates[candidates["explicit"] == 0]
+
+    candidates = candidates.reset_index(drop=True)
 
     tfidf_idxs = candidates["tfidf_index"].tolist()
     embeddings = X[tfidf_idxs]
@@ -826,7 +837,6 @@ def recommend(
     query_vec = build_query_vector(vectorizer, query)
     query_scores = compute_query_match(embeddings, query_vec)
 
-    # Activity & duration fit
     slider_min, slider_max = duration_range
     activity_scores = []
     duration_scores = []
@@ -837,15 +847,13 @@ def recommend(
         duration_scores.append(
             compute_duration_fit(row["ep_duration_min"], slider_min, slider_max)
         )
-    activity_scores = np.array(activity_scores)
-    duration_scores = np.array(duration_scores)
+    activity_scores = np.array(activity_scores, dtype=float)
+    duration_scores = np.array(duration_scores, dtype=float)
 
     pop_scores = candidates["popularity_score"].astype(float).to_numpy()
-    # Freshness boost
     recent_mask = candidates["publish_ts"] >= (now - pd.Timedelta(days=30))
     pop_scores = np.clip(pop_scores + recent_mask.astype(float) * 0.05, 0.0, 1.0)
 
-    # Base weights
     wI, wA, wQ, wP, wD = 0.35, 0.25, 0.20, 0.15, 0.05
     if activity == "Sleep":
         wA += 0.05
@@ -866,8 +874,8 @@ def recommend(
         + wP * pop_scores
         + wD * duration_scores
     )
+    relevance = np.asarray(relevance, dtype=float)
 
-    # History & penalties
     activity_label = st.session_state.get("current_activity_label", activity)
     penalties = st.session_state.activity_penalties.get(activity_label, {})
 
@@ -908,7 +916,6 @@ def recommend(
     selected_local_idx = mmr_select(candidates, relevance, sim_matrix, lambda_div)
     ranked = candidates.iloc[selected_local_idx].reset_index(drop=True)
 
-    # Update shown items for novelty tracking
     shown_items = st.session_state.get("shown_items", set())
     for _, row in ranked.iterrows():
         shown_items.add(row["episode_id"])
@@ -936,8 +943,6 @@ def main():
     st.title("🎧 Activity-Aware Podcast Recommender")
     st.caption("Activity-aware ranking with explainability and LLM-based review summaries.")
 
-    # --- Activity selection ---
-
     st.markdown("### What are you doing now?")
     activity = st.radio(
         "",
@@ -957,14 +962,11 @@ def main():
     st.session_state.current_activity = activity
     st.session_state.current_activity_label = activity_label
 
-    # --- Query & filters ---
-
     query = st.text_input(
         "Optional topic or keywords",
         placeholder='e.g. "AI ethics", "Premier League", "Stoicism"',
     )
 
-    # Duration slider (mobile-first style)
     target_min, target_max = get_activity_target_window(
         activity, workout_mode, activity_label
     )
@@ -996,7 +998,6 @@ def main():
             help="Controls MMR diversification: 0 = focus on relevance, 1 = more diversity.",
         )
 
-    # Cold start interests
     if not st.session_state.liked_items and not st.session_state.saved_items:
         st.info("No history yet — tuned for your activity. Pick a few topics to get started.")
     chips_default = st.session_state.get("selected_chips", [])
@@ -1010,8 +1011,6 @@ def main():
         apply_chip_interests(chips)
 
     st.markdown("---")
-
-    # --- Recommendations ---
 
     ranked = recommend(
         podcasts_df,
@@ -1046,7 +1045,6 @@ def main():
 
             st.markdown("---")
             with st.container():
-                # Header
                 col_icon, col_main = st.columns([1, 5])
                 with col_icon:
                     st.markdown("### 🎙️")
@@ -1058,7 +1056,6 @@ def main():
                         f"Popularity {row['popularity_score']:.2f}"
                     )
 
-                    # Badges
                     interest_label = (
                         explain["interest_terms"][0]
                         if explain["interest_terms"]
@@ -1078,10 +1075,8 @@ def main():
                         f"`Pop: {row['popularity_score']:.2f}`"
                     )
 
-                    # Explainability one-liner
                     st.write(f"**Why we think you'll like it:** {explain['text']}")
 
-                # Controls
                 col_a, col_b, col_c = st.columns([2, 3, 3])
 
                 with col_a:
@@ -1165,7 +1160,7 @@ def main():
                             extra={"show_id": show_id},
                         )
 
-                    # Review summary via LLM
+                    # Review summary
                     if st.button("Review summary", key=f"review_{ep_id}"):
                         log_event(
                             "review_summary_opened",
@@ -1174,15 +1169,12 @@ def main():
                             extra={"episode_id": ep_id},
                         )
                         with st.spinner("Summarizing listener reviews..."):
-                            summary = summarize_reviews(show_id, row["show_title"])
-                        st.info(summary)
+                            summarize_reviews(show_id, row["show_title"])
 
-                    # If we already fetched summary earlier, show it
                     if show_id in st.session_state.llm_summaries:
-                        st.caption("What other listeners say:")
-                        st.info(st.session_state.llm_summaries[show_id])
+                        with st.expander("What other listeners say", expanded=False):
+                            st.write(st.session_state.llm_summaries[show_id])
 
-                # "Why this?" panel
                 why_key = f"why_open_{ep_id}"
                 show_why = st.session_state.get(why_key, False)
                 if st.button("Why this?", key=f"why_btn_{ep_id}"):

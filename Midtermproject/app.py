@@ -320,7 +320,6 @@ def render_metrics():
     with col4:
         st.metric("Review summary opens", int(review_opens))
 
-    # Time-to-first-play for current session
     session_id = st.session_state.get("session_id")
     df_sess = df[df["session_id"] == session_id].copy()
     df_sess["user_ts_dt"] = pd.to_datetime(df_sess["user_ts"], errors="coerce")
@@ -432,7 +431,6 @@ def compute_activity_fit(row, activity, workout_mode):
 
 
 def build_interest_vector(vectorizer):
-    # Merge chip-based and feedback-based weights
     weights = {}
     for source in ("chip_interest_terms", "feedback_interest_terms"):
         for term, w in st.session_state.get(source, {}).items():
@@ -660,11 +658,27 @@ def summarize_reviews(show_id, show_title):
         return cache[show_id]
 
     all_reviews = load_reviews()
+
+    # 1) Файл пустой или отсутствует
+    if not all_reviews:
+        summary = (
+            "Review dataset is empty or data/reviews.json is missing.\n"
+            "Place the Kaggle reviews.json file into the data/ folder."
+        )
+        cache[show_id] = summary
+        st.session_state.llm_summaries = cache
+        return summary
+
     show_id_str = str(show_id)
     reviews = [r for r in all_reviews if str(r.get("podcast_id")) == show_id_str]
 
+    # 2) Нет ни одного отзыва для этого show_id
     if not reviews:
-        summary = "No user reviews available yet for this podcast."
+        summary = (
+            f"No reviews found for this podcast (show_id={show_id_str}).\n"
+            "Make sure `show_id` in sample_podcasts.csv matches `podcast_id` "
+            "values in data/reviews.json."
+        )
         cache[show_id] = summary
         st.session_state.llm_summaries = cache
         return summary
@@ -1160,7 +1174,9 @@ def main():
                             extra={"show_id": show_id},
                         )
 
-                    # Review summary
+                    # Review summary (LLM over reviews.json)
+                    open_key = f"open_summary_{ep_id}"
+
                     if st.button("Review summary", key=f"review_{ep_id}"):
                         log_event(
                             "review_summary_opened",
@@ -1170,10 +1186,13 @@ def main():
                         )
                         with st.spinner("Summarizing listener reviews..."):
                             summarize_reviews(show_id, row["show_title"])
+                        st.session_state[open_key] = True
 
+                    expanded = st.session_state.get(open_key, False)
                     if show_id in st.session_state.llm_summaries:
-                        with st.expander("What other listeners say", expanded=False):
-                            st.write(st.session_state.llm_summaries[show_id])
+                        with st.expander("What other listeners say", expanded=expanded):
+                            summary_text = st.session_state.llm_summaries[show_id]
+                            st.write(summary_text)
 
                 why_key = f"why_open_{ep_id}"
                 show_why = st.session_state.get(why_key, False)

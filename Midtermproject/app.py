@@ -16,10 +16,6 @@ How to run
 
     setx TOGETHER_API_KEY "YOUR_API_KEY_HERE"
 
-   OR (for local demo only, not recommended for public repos):
-   - Open app.py
-   - Set TOGETHER_API_KEY_FROM_CODE = "YOUR_API_KEY_HERE"
-
 3. Run the app:
 
     streamlit run app.py
@@ -34,7 +30,6 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-import sqlite3
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -48,18 +43,40 @@ from together import Together
 # Recommended: set TOGETHER_API_KEY as an environment variable.
 # Optional: for local demos only, you can paste your key here.
 # !!! Do NOT commit your real key with this file to any public repo !!!
-TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  
+TOGETHER_API_KEY_FROM_CODE = ""  # e.g. "tg-XXXXXXXXXXXXXXXXXXXXXXXX"
+
+
+def get_together_client():
+    """
+    Returns (client, error_message).
+
+    If API key is not configured or client creation fails,
+    returns (None, "error text").
+    """
+    api_key = os.environ.get("TOGETHER_API_KEY") or TOGETHER_API_KEY_FROM_CODE
+    if not api_key:
+        return None, (
+            "Together API key is not configured. "
+            "Set TOGETHER_API_KEY env var or fill TOGETHER_API_KEY_FROM_CODE in app.py."
+        )
+    try:
+        client = Together(api_key=api_key)
+        return client, None
+    except Exception as e:
+        return None, f"Couldn't create Together client: {e}"
 
 
 # -----------------------------
 # Paths & constants
 # -----------------------------
 
-DATA_DIR = "data"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DATA_DIR = os.path.join(BASE_DIR, "data")
 PODCASTS_CSV = os.path.join(DATA_DIR, "sample_podcasts.csv")
 REVIEWS_JSON = os.path.join(DATA_DIR, "reviews.json")
-TELEMETRY_CSV = "telemetry.csv"
-DB_PATH = "database.db"
+
+TELEMETRY_CSV = os.path.join(BASE_DIR, "telemetry.csv")
 
 TOP_K = 10
 
@@ -98,46 +115,6 @@ CHIP_TO_TERMS = {
     "AI": ["ai", "artificial intelligence", "machine learning"],
     "Startups": ["startup", "vc", "founder"],
 }
-
-
-# -----------------------------
-# Together client helper
-# -----------------------------
-
-def get_together_client():
-    """
-    Returns (client, error_message).
-
-    Priority:
-    1) TOGETHER_API_KEY environment variable
-    2) TOGETHER_API_KEY_FROM_CODE constant (for local demo)
-
-    If no key is found, returns (None, error_message).
-    """
-    api_key = os.environ.get("TOGETHER_API_KEY") or TOGETHER_API_KEY_FROM_CODE
-    if not api_key:
-        return None, (
-            "Together API key is not configured. "
-            "Set TOGETHER_API_KEY env var or fill TOGETHER_API_KEY_FROM_CODE in app.py."
-        )
-    client = Together(api_key=api_key)
-    return client, None
-
-
-# -----------------------------
-# Minimal DB stub
-# -----------------------------
-
-def ensure_db():
-    """Create a minimal SQLite file so database.db exists (no heavy usage)."""
-    if not os.path.exists(DB_PATH):
-        conn = sqlite3.connect(DB_PATH)
-        # Optionally create a tiny metadata table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
-        )
-        conn.commit()
-        conn.close()
 
 
 # -----------------------------
@@ -727,7 +704,6 @@ Task:
 - Do not include user names or any personal identifiers.
 - Keep a neutral, analytical tone (not promotional)."""
 
-    # Use helper to get Together client (env var or in-code key)
     client, err = get_together_client()
     if err is not None:
         summary = err
@@ -952,7 +928,6 @@ def main():
         layout="centered",
     )
 
-    ensure_db()
     init_session_state()
 
     podcasts_df = load_podcasts()
@@ -1236,8 +1211,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-if __name__ == "__main__":
-    main()
-

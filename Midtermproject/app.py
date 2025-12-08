@@ -16,6 +16,10 @@ How to run
 
     setx TOGETHER_API_KEY "YOUR_API_KEY_HERE"
 
+   OR (for local demo only, not recommended for public repos):
+   - Open app.py
+   - Set TOGETHER_API_KEY_FROM_CODE = "YOUR_API_KEY_HERE"
+
 3. Run the app:
 
     streamlit run app.py
@@ -37,7 +41,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from together import Together
 
-TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"
+
+# -----------------------------
+# Together API key configuration
+# -----------------------------
+# Recommended: set TOGETHER_API_KEY as an environment variable.
+# Optional: for local demos only, you can paste your key here.
+# !!! Do NOT commit your real key with this file to any public repo !!!
+TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  
 
 
 # -----------------------------
@@ -87,6 +98,30 @@ CHIP_TO_TERMS = {
     "AI": ["ai", "artificial intelligence", "machine learning"],
     "Startups": ["startup", "vc", "founder"],
 }
+
+
+# -----------------------------
+# Together client helper
+# -----------------------------
+
+def get_together_client():
+    """
+    Returns (client, error_message).
+
+    Priority:
+    1) TOGETHER_API_KEY environment variable
+    2) TOGETHER_API_KEY_FROM_CODE constant (for local demo)
+
+    If no key is found, returns (None, error_message).
+    """
+    api_key = os.environ.get("TOGETHER_API_KEY") or TOGETHER_API_KEY_FROM_CODE
+    if not api_key:
+        return None, (
+            "Together API key is not configured. "
+            "Set TOGETHER_API_KEY env var or fill TOGETHER_API_KEY_FROM_CODE in app.py."
+        )
+    client = Together(api_key=api_key)
+    return client, None
 
 
 # -----------------------------
@@ -692,14 +727,13 @@ Task:
 - Do not include user names or any personal identifiers.
 - Keep a neutral, analytical tone (not promotional)."""
 
-    api_key = os.environ.get("TOGETHER_API_KEY")
-    if not api_key:
-        summary = "Together API key is not configured. Please set TOGETHER_API_KEY."
+    # Use helper to get Together client (env var or in-code key)
+    client, err = get_together_client()
+    if err is not None:
+        summary = err
         cache[show_id] = summary
         st.session_state.llm_summaries = cache
         return summary
-
-    client = Together(api_key=api_key)
 
     try:
         response = client.chat.completions.create(
@@ -1198,6 +1232,10 @@ def main():
 
     st.markdown("---")
     render_metrics()
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":

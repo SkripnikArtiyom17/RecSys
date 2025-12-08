@@ -22,6 +22,7 @@ How to run
 """
 
 import os
+import re
 import csv
 import json
 import uuid
@@ -72,7 +73,7 @@ def get_together_client():
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DATA_DIR = "data"
+DATA_DIR = os.path.join(BASE_DIR, "data")
 PODCASTS_CSV = os.path.join(DATA_DIR, "sample_podcasts.csv")
 REVIEWS_JSON = os.path.join(DATA_DIR, "reviews.json")
 
@@ -118,6 +119,33 @@ CHIP_TO_TERMS = {
 
 
 # -----------------------------
+# ID normalisation helpers
+# -----------------------------
+
+def normalize_podcast_id(value: str) -> str:
+    """
+    Приводим разные варианты ID к одному формату.
+    Примеры:
+        's1'   -> 'S001'
+        'S01'  -> 'S001'
+        'S001' -> 'S001'
+        '1'    -> 'S001'
+    Любые другие строки просто переводим в upper-case.
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    s = s.upper()
+    m = re.match(r"^S?(\d+)$", s)
+    if m:
+        num = int(m.group(1))
+        return f"S{num:03d}"
+    return s
+
+
+# -----------------------------
 # Data loading & TF-IDF
 # -----------------------------
 
@@ -158,6 +186,10 @@ def load_podcasts(path=PODCASTS_CSV):
 
 @st.cache_data
 def load_reviews(path=REVIEWS_JSON):
+    """
+    Читает reviews.json (JSONL) и для каждого отзыва добавляет
+    нормализованный podcast_id_norm.
+    """
     reviews = []
     if not os.path.exists(path):
         return reviews
@@ -169,6 +201,9 @@ def load_reviews(path=REVIEWS_JSON):
                 continue
             try:
                 obj = json.loads(line)
+                pid_raw = obj.get("podcast_id", "")
+                obj["podcast_id_raw"] = str(pid_raw)
+                obj["podcast_id_norm"] = normalize_podcast_id(pid_raw)
                 reviews.append(obj)
             except json.JSONDecodeError:
                 continue
@@ -659,7 +694,6 @@ def summarize_reviews(show_id, show_title):
 
     all_reviews = load_reviews()
 
-    # 1) Файл пустой или отсутствует
     if not all_reviews:
         summary = (
             "Review dataset is empty or data/reviews.json is missing.\n"
@@ -669,14 +703,19 @@ def summarize_reviews(show_id, show_title):
         st.session_state.llm_summaries = cache
         return summary
 
-    show_id_str = str(show_id)
-    reviews = [r for r in all_reviews if str(r.get("podcast_id")) == show_id_str]
+    target_norm = normalize_podcast_id(show_id)
 
-    # 2) Нет ни одного отзыва для этого show_id
+    reviews = [
+        r for r in all_reviews
+        if r.get("podcast_id_norm") == target_norm
+        or normalize_podcast_id(r.get("podcast_id")) == target_norm
+    ]
+
     if not reviews:
         summary = (
-            f"No reviews found for this podcast (show_id={show_id_str}).\n"
-            "Make sure `show_id` in sample_podcasts.csv matches `podcast_id` "
+            f"No reviews found for this podcast (show_id={show_id}, "
+            f"normalized={target_norm}). "
+            "Make sure show_id in sample_podcasts.csv matches podcast_id "
             "values in data/reviews.json."
         )
         cache[show_id] = summary
@@ -719,7 +758,7 @@ def summarize_reviews(show_id, show_title):
     prompt = f"""You are an assistant summarizing user reviews for a podcast.
 
 Podcast title: {show_title}
-Podcast id: {show_id_str}
+Normalized podcast id: {target_norm}
 
 {avg_rating_text}
 Here are some user reviews (each bullet is one review; they may disagree):

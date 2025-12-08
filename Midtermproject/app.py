@@ -37,6 +37,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from together import Together
 
+TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"
+
 
 # -----------------------------
 # Paths & constants

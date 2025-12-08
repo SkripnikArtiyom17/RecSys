@@ -1,698 +1,1203 @@
-# Activity-Aware Podcast Recommender (Streamlit)
-# Runs fully offline. Implements: TF-IDF features, MMR diversification, explainability,
-# session-level feedback loop, cold start interests, guardrails, and simple telemetry.
-#
-# How to run (also see chat message):
-#   1) pip install streamlit scikit-learn pandas numpy
-#   2) streamlit run app.py
+"""
+Activity-Aware Podcast Recommender + LLM Review Summaries (Streamlit)
+
+How to run
+----------
+
+1. Install dependencies:
+
+    pip install streamlit scikit-learn pandas numpy together
+
+2. Set Together API key (Linux/macOS):
+
+    export TOGETHER_API_KEY="YOUR_API_KEY_HERE"
+
+   On Windows PowerShell:
+
+    setx TOGETHER_API_KEY "YOUR_API_KEY_HERE"
+
+3. Run the app:
+
+    streamlit run app.py
+"""
 
 import os
-import time
-import math
-import uuid
+import csv
 import json
-from datetime import datetime, timedelta
+import uuid
+import time
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
+import sqlite3
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ---------------------------- Page Setup ----------------------------
-st.set_page_config(page_title="Activity-Aware Podcast Recommender", page_icon="🎧", layout="centered")
-
-# Backward-compatible segmented control
-segmented = getattr(st, "segmented_control", None)
+from together import Together
 
 
-# High-contrast style + mobile-first tweaks
-st.markdown("""
+# -----------------------------
+# Paths & constants
+# -----------------------------
 
-<style>
-:root{
-  --bg-left:#c42a66;
-  --bg-deep:#0f1116;
-  --bg-teal:#17343a;
-  --accent:#e15b8a;
-  --text:#e8edf2;
-  --muted:#b9c0c7;
-}
-/* Base layout and background gradients to mimic the slide */
-.stApp {
-  background:
-    radial-gradient(1100px 750px at 95% 0%, rgba(225,91,138,0.35) 0%, rgba(225,91,138,0.08) 45%, rgba(0,0,0,0) 46%),
-    linear-gradient(120deg, var(--bg-left) 0%, var(--bg-deep) 35%, var(--bg-teal) 70%, var(--bg-deep) 100%);
-  color: var(--text);
-  min-height: 100vh;
-}
-.block-container { padding-top: 1.25rem; padding-bottom: 4.5rem; }
+DATA_DIR = "data"
+PODCASTS_CSV = os.path.join(DATA_DIR, "sample_podcasts.csv")
+REVIEWS_JSON = os.path.join(DATA_DIR, "reviews.json")
+TELEMETRY_CSV = "telemetry.csv"
+DB_PATH = "database.db"
 
-/* Typography */
-h1, h2, h3, h4 { letter-spacing: 0.2px; }
-h1 { font-weight: 700; }
-p, .stMarkdown { color: var(--text); }
+TOP_K = 10
 
-/* Cards (glass) */
-.card {
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 18px;
-  padding: 0.95rem;
-  margin-bottom: 0.9rem;
-  background: rgba(17,19,26,0.55);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-}
+SLEEP_TAGS = {"calm", "storytelling", "sleep", "soft", "soft_start", "relax"}
+FOCUS_POS_TAGS = {"interview", "background", "deep", "low-energy", "focus", "study"}
+FOCUS_NEG_TAGS = {"comedy", "energetic", "hype", "upbeat"}
+WORKOUT_TAGS = {"energetic", "upbeat", "motivational", "high-intensity", "hype"}
+COMMUTE_TAGS = {"narrative", "news", "daily brief", "daily-brief", "commute"}
 
-/* Badges */
-.badge {
-  display: inline-block;
-  padding: 0.22rem 0.48rem;
-  border-radius: 8px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.05);
-  margin-right: 6px;
-  margin-bottom: 6px;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-/* Buttons */
-.stButton>button {
-  border-radius: 12px;
-  padding: 0.45rem 0.7rem;
-  border: 1px solid rgba(255,255,255,0.14);
-  background: rgba(255,255,255,0.06);
-  color: var(--text);
-}
-.stButton>button:hover {
-  border-color: rgba(255,255,255,0.28);
-  background: rgba(255,255,255,0.12);
-}
-
-/* Inputs */
-.stTextInput>div>div>input, .stSelectbox>div>div, .stSlider, .stRadio, .stSegmentedControl, .stMultiSelect {
-  color: var(--text) !important;
-}
-/* Radio (fallback for segmented control) */
-.stRadio > label { color: var(--muted); }
-.stRadio div[role="radiogroup"] label { padding: 0.15rem 0.2rem; }
-
-.reason { opacity: 0.9; font-size: 0.95rem; color: var(--muted); }
-
-/* Footer bar like the slide baseline */
-.app-footer {
-  position: fixed;
-  left: 0; right: 0; bottom: 18px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.95rem; color: var(--muted);
-  pointer-events: none;
-}
-.app-footer .bar {
-  position: absolute; left: 6%; right: 6%; top: -10px; height: 1.5px;
-  background: rgba(255,255,255,0.5);
-  border-radius: 1px;
-}
-.app-footer .left, .app-footer .center, .app-footer .right {
-  pointer-events: auto;
-}
-.app-footer .left { position: absolute; left: 6%; }
-.app-footer .right { position: absolute; right: 6%; }
-.app-footer .center { opacity: 0.95; }
-</style>
-
-""", unsafe_allow_html=True)
-
-# ---------------------------- Constants ----------------------------
-DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "sample_podcasts.csv")
-TELEMETRY_PATH = os.path.join(os.getcwd(), "telemetry.csv")
-
-ACTIVITIES = ["Commute", "Workout", "Focus", "Sleep"]
-WORKOUT_MODES = ["Run", "Lift", "Cardio"]
-INTEREST_VOCAB = [
-    "ai","ethics","research","markets","finance","strategy","stoicism","history","mystery","investigation",
-    "narrative","calm","background","energetic","upbeat","storytelling","interview","news","football",
-    "premier league","documentary","space","climate","psychology","software","comedy","humor"
+INTEREST_CHIPS = [
+    "Tech",
+    "True Crime",
+    "Comedy",
+    "Self-help",
+    "Business",
+    "News",
+    "History",
+    "Mindfulness",
+    "Football",
+    "Sports",
+    "AI",
+    "Startups",
 ]
 
-# Default weights
-DEFAULT_WEIGHTS = dict(wI=0.35, wA=0.25, wQ=0.20, wP=0.15, wD=0.05)
-
-# Activity tag biases (simple lists)
-ACTIVITY_TAG_BIASES = {
-    "Sleep": {"pos":["calm","storytelling","background","soft"], "neg":["comedy","energetic","high-energy","banter"]},
-    "Focus": {"pos":["interview","background","calm","research"], "neg":["comedy","energetic","high-energy","improv"]},
-    "Workout": {"pos":["energetic","upbeat","analysis"], "neg":["calm","sleep","soft"]},
-    "Commute": {"pos":["narrative","news","briefing"], "neg":[]},
+CHIP_TO_TERMS = {
+    "Tech": ["tech", "technology", "software", "programming", "engineering"],
+    "True Crime": ["crime", "murder", "investigation", "case"],
+    "Comedy": ["comedy", "funny", "humor"],
+    "Self-help": ["self-help", "mindfulness", "productivity", "habits"],
+    "Business": ["business", "startup", "finance", "entrepreneurship"],
+    "News": ["news", "daily brief", "current events"],
+    "History": ["history", "historical", "war", "ancient"],
+    "Mindfulness": ["mindfulness", "meditation", "calm"],
+    "Football": ["football", "premier league", "soccer"],
+    "Sports": ["sports", "workout", "training"],
+    "AI": ["ai", "artificial intelligence", "machine learning"],
+    "Startups": ["startup", "vc", "founder"],
 }
 
-# Duration windows per activity/sub-mode
-def activity_duration_window(activity, submode):
-    if activity == "Sleep":
-        return (30, 90)
-    if activity == "Focus":
-        return (25, 60)
-    if activity == "Workout":
-        if submode == "Run":
-            return (20, 45)
-        if submode == "Lift":
-            return (35, 80)
-        return (25, 60)  # Cardio
-    if activity == "Commute":
-        return (15, 45)
-    return (20, 60)
 
-# Lambda tweaks defaults per activity for diversification
-def activity_lambda_default(activity):
-    return 0.4 if activity == "Sleep" else (0.6 if activity == "Workout" else 0.5)
+# -----------------------------
+# Minimal DB stub
+# -----------------------------
 
-# ---------------------------- Utils ----------------------------
-def ensure_telemetry_file():
-    if not os.path.exists(TELEMETRY_PATH):
-        with open(TELEMETRY_PATH, "w", encoding="utf-8") as f:
-            f.write("session_id,user_ts,event_type,activity,item_id,details\\n")
+def ensure_db():
+    """Create a minimal SQLite file so database.db exists (no heavy usage)."""
+    if not os.path.exists(DB_PATH):
+        conn = sqlite3.connect(DB_PATH)
+        # Optionally create a tiny metadata table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        conn.commit()
+        conn.close()
 
-def log_event(session_id, event_type, activity, item_id="", details=None):
-    ensure_telemetry_file()
-    payload = "" if details is None else json.dumps(details, ensure_ascii=False)
-    with open(TELEMETRY_PATH, "a", encoding="utf-8") as f:
-        f.write(f"{session_id},{datetime.utcnow().isoformat()},{event_type},{activity},{item_id},{payload}\\n")
 
-def soft_clip01(x):
-    return max(0.0, min(1.0, float(x)))
+# -----------------------------
+# Data loading & TF-IDF
+# -----------------------------
 
-def triangular_fit(x, low, high):
-    # returns 1 inside window, linearly decays to 0 outside at 50% of window width
-    if low <= x <= high:
-        return 1.0
-    width = max(1.0, high - low)
-    if x < low:
-        return max(0.0, 1 - (low - x) / (0.5*width))
-    else:
-        return max(0.0, 1 - (x - high) / (0.5*width))
+@st.cache_data
+def load_podcasts(path=PODCASTS_CSV):
+    if not os.path.exists(path):
+        st.error(f"Missing data file: {path}")
+        st.stop()
 
-def freshness_boost(ts_str):
-    try:
-        ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-        if datetime.now() - ts <= timedelta(days=30):
-            return 0.05
-    except Exception:
-        pass
-    return 0.0
-
-def within_last_days(ts_str, days=30):
-    try:
-        ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-        return (datetime.now() - ts) <= timedelta(days=days)
-    except Exception:
-        return False
-
-# ---------------------------- Data Load & TF-IDF ----------------------------
-@st.cache_data(show_spinner=False)
-def load_data(path):
     df = pd.read_csv(path)
-    # Build combined text field
-    df["text"] = (df["ep_title"].fillna("") + " " + df["ep_desc"].fillna("") + " " + df["tags"].fillna("")).str.lower()
+
+    # Basic sanitation
+    for col in ["explicit", "soft_start"]:
+        if col in df.columns:
+            df[col] = df[col].astype(int)
+        else:
+            df[col] = 0
+
+    if "ep_duration_min" not in df.columns:
+        st.error("sample_podcasts.csv must contain 'ep_duration_min' column.")
+        st.stop()
+
+    if "avg_len_min" not in df.columns:
+        df["avg_len_min"] = df["ep_duration_min"]
+
+    if "popularity_score" not in df.columns:
+        df["popularity_score"] = 0.5
+
+    # Parse timestamps as UTC-aware datetimes
+    df["publish_ts"] = pd.to_datetime(
+        df["publish_ts"], errors="coerce", utc=True
+    )
+
+    df = df.reset_index(drop=True)
+    df["tfidf_index"] = np.arange(len(df))
     return df
 
-@st.cache_data(show_spinner=False)
-def build_tfidf(df):
-    vec = TfidfVectorizer(stop_words="english", min_df=1, max_df=0.95)
-    X = vec.fit_transform(df["text"].tolist())
-    return vec, X
 
-# ---------------------------- Session State ----------------------------
-if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())[:8]
-if "interest_weights" not in st.session_state:
-    st.session_state.interest_weights = {}  # term -> weight delta
-if "liked_items" not in st.session_state:
-    st.session_state.liked_items = []  # list of episode_id
-if "saved_items" not in st.session_state:
-    st.session_state.saved_items = set()
-if "disliked_items" not in st.session_state:
-    st.session_state.disliked_items = {}  # episode_id -> reason
-if "activity_penalties" not in st.session_state:
-    st.session_state.activity_penalties = {}  # (activity, show_id) -> penalty [0..0.4]
-if "seen_item_ids" not in st.session_state:
-    st.session_state.seen_item_ids = set()
-if "first_impression_ts" not in st.session_state:
-    st.session_state.first_impression_ts = None
-if "first_play_ts" not in st.session_state:
-    st.session_state.first_play_ts = None
-if "len_bias" not in st.session_state:
-    st.session_state.len_bias = 0.0  # positive favors shorter after "Too long"
+@st.cache_data
+def load_reviews(path=REVIEWS_JSON):
+    reviews = []
+    if not os.path.exists(path):
+        return reviews
 
-# ---------------------------- App Header ----------------------------
-st.title("🎧 Activity‑Aware Podcast Recommender")
-st.caption("Deterministic offline prototype with explainability, diversity (MMR), and in‑session learning.")
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                reviews.append(obj)
+            except json.JSONDecodeError:
+                continue
+    return reviews
 
-df = load_data(DATA_PATH)
-vectorizer, X = build_tfidf(df)
 
-# Map episode_id -> idx
-ep_index = {eid: i for i, eid in enumerate(df["episode_id"])}
+@st.cache_data
+def build_tfidf(podcasts_df: pd.DataFrame):
+    """Build TF-IDF model over ep_title + ep_desc + tags."""
+    corpus = (
+        podcasts_df["ep_title"].fillna("")
+        + " "
+        + podcasts_df["ep_desc"].fillna("")
+        + " "
+        + podcasts_df["tags"].fillna("")
+    )
+    vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
+    X = vectorizer.fit_transform(corpus)
+    return vectorizer, X
 
-# ---------------------------- Controls ----------------------------
-with st.container():
-    activity = segmented("What are you doing now?", ACTIVITIES, default=ACTIVITIES[0]) if segmented else st.radio("What are you doing now?", ACTIVITIES, index=0)
-    # Workout sub-mode
-    submode = None
-    if activity == "Workout":
-        submode = segmented("Workout mode", WORKOUT_MODES, default=WORKOUT_MODES[0]) if segmented else st.radio("Workout mode", WORKOUT_MODES, index=0)
 
-    # Search + Filters
-    query = st.text_input("Search topics (e.g., “AI ethics”, “Premier League”, “Stoicism”)", value="", help="Free-text search across titles, descriptions, and tags.")
-    colf1, colf2 = st.columns(2)
-    with colf1:
-        dur_min, dur_max = st.slider("Duration range (min)", 10, 90, value=activity_duration_window(activity, submode), step=5)
-    with colf2:
-        language = st.selectbox("Language", options=["any","en","es","ru"], index=0)
+# -----------------------------
+# Session state helpers
+# -----------------------------
 
-    colf3, colf4 = st.columns(2)
-    with colf3:
-        new_toggle = st.selectbox("Freshness", options=["Any","New (≤30d)","Evergreen (>30d)"], index=0)
-    with colf4:
-        lam = st.slider("Diversity: More familiar ↔ More exploratory (λ)", 0.0, 1.0, value=activity_lambda_default(activity), step=0.05)
+def init_session_state():
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.session_start_ts = time.time()
+        st.session_state.first_play_ts = None
 
-# Safety defaults
-hide_explicit = activity in ["Sleep","Focus"]
+    if "chip_interest_terms" not in st.session_state:
+        st.session_state.chip_interest_terms = {}
+    if "feedback_interest_terms" not in st.session_state:
+        st.session_state.feedback_interest_terms = {}
+    if "selected_chips" not in st.session_state:
+        st.session_state.selected_chips = []
 
-# Cold start: pick interests if no likes/saves and no selected interest weights
-if not st.session_state.liked_items and not st.session_state.saved_items and not st.session_state.interest_weights:
-    st.info("No history yet — tuned for your activity. Pick a few interests to get started.")
-    picked = st.multiselect("Pick interests (multi-select)", options=INTEREST_VOCAB, default=["calm","interview"] if activity in ["Sleep","Focus"] else ["energetic","analysis"])
-    # Create a light positive weight for selected terms
-    for t in picked:
-        st.session_state.interest_weights[t] = st.session_state.interest_weights.get(t, 0.0) + 0.5
+    if "liked_items" not in st.session_state:
+        st.session_state.liked_items = set()
+    if "saved_items" not in st.session_state:
+        st.session_state.saved_items = set()
+    if "disliked_items" not in st.session_state:
+        st.session_state.disliked_items = set()
+    if "heard_items" not in st.session_state:
+        st.session_state.heard_items = set()
+    if "liked_shows" not in st.session_state:
+        st.session_state.liked_shows = set()
+    if "disliked_shows" not in st.session_state:
+        st.session_state.disliked_shows = set()
 
-# ---------------------------- Build User Interest Vector ----------------------------
-def interest_vector(vectorizer, X, df):
-    # Build a pseudo-document using weighted terms from interest_weights and liked items
-    terms = []
-    for term, w in st.session_state.interest_weights.items():
-        if w > 0:
-            terms.extend([term] * int(1 + min(5, w*2)))  # replicate by weight
-    # Add liked items' texts
-    for eid in st.session_state.liked_items[-10:]:
-        idx = ep_index.get(eid)
-        if idx is not None:
-            terms.append(df.iloc[idx]["text"])
-    if not terms:
-        return None
-    vec = vectorizer.transform([" ".join(terms)])
-    return vec
+    if "activity_penalties" not in st.session_state:
+        st.session_state.activity_penalties = {}  # activity_label -> {show_id: penalty}
+    if "duration_bias" not in st.session_state:
+        st.session_state.duration_bias = {}       # activity_label -> shift in minutes
+    if "sleep_penalty_extra" not in st.session_state:
+        st.session_state.sleep_penalty_extra = 0.0
 
-user_vec = interest_vector(vectorizer, X, df)
+    if "shown_items" not in st.session_state:
+        st.session_state.shown_items = set()
 
-# ---------------------------- Compute Signals ----------------------------
-def tag_list(s):
-    return [t.strip().lower() for t in str(s or "").split(",")]
+    if "llm_summaries" not in st.session_state:
+        st.session_state.llm_summaries = {}
 
-def tag_score(tags, pos, neg):
-    score = 0.0
-    for t in tags:
-        if t in pos: score += 0.15
-        if t in neg: score -= 0.15
-    return score
+    if "current_activity" not in st.session_state:
+        st.session_state.current_activity = "Commute"
+    if "current_activity_label" not in st.session_state:
+        st.session_state.current_activity_label = "Commute"
 
-def activity_fit(row, activity, submode):
-    # Duration window for activity
-    a_low, a_high = activity_duration_window(activity, submode)
-    dur = float(row["ep_duration_min"])
-    # Base fit from triangular window (+ user bias favoring shorter if set)
-    fit = triangular_fit(dur, a_low, a_high)
-    if st.session_state.len_bias > 0:
-        # amplify preference for shorter durations
-        if dur > (a_low + a_high)/2:
-            fit *= max(0.5, 1.0 - 0.3*st.session_state.len_bias)
+
+def apply_chip_interests(chips):
+    """Build base interest term weights from selected chips."""
+    chip_terms = {}
+    for chip in chips:
+        for term in CHIP_TO_TERMS.get(chip, []):
+            term = term.lower()
+            chip_terms[term] = chip_terms.get(term, 0.0) + 1.0
+    st.session_state.chip_interest_terms = chip_terms
+
+
+def add_feedback_interest(terms, delta):
+    """Adjust term weights based on feedback (like/dislike)."""
+    fb = st.session_state.feedback_interest_terms
+    for t in terms:
+        t = t.lower()
+        fb[t] = fb.get(t, 0.0) + float(delta)
+    st.session_state.feedback_interest_terms = fb
+
+
+def current_activity_label(activity, workout_mode):
+    if activity == "Workout" and workout_mode:
+        return f"{activity}:{workout_mode}"
+    return activity
+
+
+# -----------------------------
+# Telemetry
+# -----------------------------
+
+def log_event(event_type, activity_label, item_id=None, extra=None):
+    row = {
+        "session_id": st.session_state.get("session_id", ""),
+        "user_ts": datetime.now(timezone.utc).isoformat(),
+        "activity": activity_label or "",
+        "item_id": item_id or "",
+        "event_type": event_type,
+        "extra": json.dumps(extra or {}, ensure_ascii=False),
+    }
+    file_exists = os.path.exists(TELEMETRY_CSV)
+    with open(TELEMETRY_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def load_telemetry_df():
+    if not os.path.exists(TELEMETRY_CSV):
+        return pd.DataFrame(
+            columns=["session_id", "user_ts", "activity", "item_id", "event_type", "extra"]
+        )
+    try:
+        return pd.read_csv(TELEMETRY_CSV)
+    except Exception:
+        return pd.DataFrame(
+            columns=["session_id", "user_ts", "activity", "item_id", "event_type", "extra"]
+        )
+
+
+def render_metrics():
+    st.subheader("📊 Metrics (demo)")
+    df = load_telemetry_df()
+    if df.empty:
+        st.write("No telemetry yet.")
+        return
+
+    total_impressions = (df["event_type"] == "impression").sum()
+    plays = (df["event_type"] == "play").sum()
+    review_opens = (df["event_type"] == "review_summary_opened").sum()
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total impressions", int(total_impressions))
+    with col2:
+        st.metric("Total plays", int(plays))
+    with col3:
+        ctr = plays / total_impressions if total_impressions > 0 else 0.0
+        st.metric("Play CTR", f"{ctr * 100:.1f}%")
+    with col4:
+        st.metric("Review summary opens", int(review_opens))
+
+    # Time-to-first-play for current session
+    session_id = st.session_state.get("session_id")
+    df_sess = df[df["session_id"] == session_id].copy()
+    df_sess["user_ts_dt"] = pd.to_datetime(df_sess["user_ts"], errors="coerce")
+    plays_sess = df_sess[df_sess["event_type"] == "play"]
+    if not plays_sess.empty:
+        t0 = df_sess["user_ts_dt"].min()
+        t_play = plays_sess["user_ts_dt"].min()
+        if pd.notna(t0) and pd.notna(t_play):
+            delta_sec = (t_play - t0).total_seconds()
+            st.metric("Time to first play (this session)", f"{delta_sec:.1f} s")
+
+
+# -----------------------------
+# Ranking signals
+# -----------------------------
+
+def smooth_duration_score(d, target_min, target_max):
+    if pd.isna(d):
+        return 0.0
+    d = float(d)
+    if target_min <= d <= target_max:
+        return 1.0
+    if d < target_min:
+        # linear drop to 0 at 0 minutes
+        return max(0.0, 1.0 - (target_min - d) / max(target_min, 1.0))
+    else:
+        # d > target_max, drop to 0 at 90 minutes
+        return max(0.0, 1.0 - (d - target_max) / max(90 - target_max, 1.0))
+
+
+def compute_duration_fit(duration_min, slider_min, slider_max):
+    # penalty relative to user-selected duration range
+    if pd.isna(duration_min):
+        return 0.0
+    d = float(duration_min)
+    if slider_min <= d <= slider_max:
+        return 1.0
+    if d < slider_min:
+        return max(0.0, 1.0 - (slider_min - d) / max(slider_min, 1.0))
+    else:
+        return max(0.0, 1.0 - (d - slider_max) / max(90 - slider_max, 1.0))
+
+
+def get_activity_target_window(activity, workout_mode, activity_label):
+    if activity == "Sleep":
+        base_min, base_max = 20, 60
+    elif activity == "Focus":
+        base_min, base_max = 20, 60
+    elif activity == "Commute":
+        base_min, base_max = 10, 30
+    elif activity == "Workout":
+        if workout_mode == "Run":
+            base_min, base_max = 30, 60
+        elif workout_mode == "Lift":
+            base_min, base_max = 35, 75
+        elif workout_mode == "Cardio":
+            base_min, base_max = 25, 50
         else:
-            fit = min(1.0, fit + 0.15*st.session_state.len_bias)
-    # Tag bias
-    biases = ACTIVITY_TAG_BIASES.get(activity, {"pos":[], "neg":[]})
-    tlist = tag_list(row["tags"])
-    fit += tag_score(tlist, biases.get("pos",[]), biases.get("neg",[]))
-    # Soft start preference for Sleep
-    if activity == "Sleep" and int(row.get("soft_start",0)) == 1:
-        fit += 0.1
-    return soft_clip01(fit)
+            base_min, base_max = 25, 50
+    else:
+        base_min, base_max = 15, 60
 
-def duration_fit(row, low, high):
-    dur = float(row["ep_duration_min"])
-    return triangular_fit(dur, low, high)
+    bias = st.session_state.duration_bias.get(activity_label, 0.0)
+    min_d = max(10, base_min + bias)
+    max_d = max(min_d + 5, base_max + bias)
+    return min_d, max_d
 
-def popularity_signal(row):
-    base = float(row["popularity_score"])
-    boost = freshness_boost(str(row["publish_ts"]))
-    return soft_clip01(base + boost)
 
-def query_vector(q):
-    if not q.strip():
+def compute_activity_fit(row, activity, workout_mode):
+    activity_label = st.session_state.get("current_activity_label", activity)
+    target_min, target_max = get_activity_target_window(
+        activity, workout_mode, activity_label
+    )
+    d = row["ep_duration_min"]
+    dur_score = smooth_duration_score(d, target_min, target_max)
+
+    tags = [
+        t.strip().lower()
+        for t in str(row.get("tags", "")).split(",")
+        if t.strip()
+    ]
+    tag_score = 0.0
+    tag_set = set(tags)
+
+    if activity == "Sleep":
+        if int(row.get("soft_start", 0)) == 1:
+            dur_score = min(1.0, dur_score + 0.2)
+        matches = len(tag_set & SLEEP_TAGS)
+        tag_score = min(1.0, matches / 2.0)
+        # penalty for high-energy / comedy
+        penalty = 0.3 + float(st.session_state.get("sleep_penalty_extra", 0.0))
+        if tag_set & FOCUS_NEG_TAGS or tag_set & WORKOUT_TAGS:
+            tag_score -= penalty
+    elif activity == "Focus":
+        matches = len(tag_set & FOCUS_POS_TAGS)
+        tag_score = min(1.0, matches / 2.0)
+        if tag_set & FOCUS_NEG_TAGS:
+            tag_score -= 0.3
+    elif activity == "Workout":
+        matches = len(tag_set & WORKOUT_TAGS)
+        tag_score = min(1.0, matches / 2.0)
+    elif activity == "Commute":
+        matches = len(tag_set & COMMUTE_TAGS)
+        tag_score = min(1.0, matches / 2.0)
+    else:
+        matches = len(tag_set)
+        tag_score = min(1.0, matches / 5.0)
+
+    score = 0.6 * max(0.0, min(1.0, dur_score)) + 0.4 * max(
+        0.0, min(1.0, tag_score)
+    )
+    return float(max(0.0, min(1.0, score)))
+
+
+def build_interest_vector(vectorizer):
+    # Merge chip-based and feedback-based weights
+    weights = {}
+    for source in ("chip_interest_terms", "feedback_interest_terms"):
+        for term, w in st.session_state.get(source, {}).items():
+            weights[term] = weights.get(term, 0.0) + float(w)
+
+    if not weights:
         return None
-    return vectorizer.transform([q.strip().lower()])
 
-def cosine_row(vec, row_idx):
-    # Cosine similarity between vector and X[row_idx]
-    if vec is None: return 0.0
-    sim = cosine_similarity(vec, X[row_idx])
-    return float(sim[0,0])
+    vocab = vectorizer.vocabulary_
+    vec = np.zeros(len(vocab), dtype=float)
+    for term, w in weights.items():
+        idx = vocab.get(term.lower())
+        if idx is not None:
+            vec[idx] += w
 
-# ---------------------------- Filter Items ----------------------------
-def apply_filters(df):
-    mask = pd.Series([True]*len(df), index=df.index)
-    if language != "any":
-        mask &= (df["language"] == language)
-    if hide_explicit:
-        mask &= (df["explicit"] == 0)
-    if new_toggle == "New (≤30d)":
-        mask &= df["publish_ts"].apply(lambda s: within_last_days(s, 30))
-    elif new_toggle == "Evergreen (>30d)":
-        mask &= ~df["publish_ts"].apply(lambda s: within_last_days(s, 30))
-    # Duration slider filter
-    mask &= df["ep_duration_min"].between(dur_min, dur_max, inclusive="both")
-    return df[mask].copy()
+    norm = np.linalg.norm(vec)
+    if norm == 0:
+        return None
+    return (vec / norm).reshape(1, -1)
 
-filtered = apply_filters(df)
 
-# ---------------------------- Precompute Similarities ----------------------------
-q_vec = query_vector(query)
-if user_vec is not None:
-    interest_sims = cosine_similarity(user_vec, X[filtered.index])  # shape (1, n)
-    interest_sims = interest_sims.flatten()
-else:
-    interest_sims = np.zeros(len(filtered))
+def compute_interest_fit(embeddings, interest_vec):
+    if interest_vec is None:
+        return np.zeros(embeddings.shape[0])
+    sims = cosine_similarity(embeddings, interest_vec)[:, 0]
+    return np.clip(sims, 0.0, 1.0)
 
-if q_vec is not None:
-    query_sims = cosine_similarity(q_vec, X[filtered.index]).flatten()
-else:
-    query_sims = np.zeros(len(filtered))
 
-# Activity fit and Duration fit
-activity_fits = []
-duration_fits = []
-popularities = []
-penalties = []  # per-show penalty for "Not for this activity"
+def build_query_vector(vectorizer, query_text):
+    if not query_text:
+        return None
+    return vectorizer.transform([query_text])
 
-for i, (idx, row) in enumerate(filtered.iterrows()):
-    activity_fits.append(activity_fit(row, activity, submode))
-    duration_fits.append(duration_fit(row, dur_min, dur_max))
-    popularities.append(popularity_signal(row))
-    penalties.append(st.session_state.activity_penalties.get((activity, str(row["show_id"])), 0.0))
 
-activity_fits = np.array(activity_fits)
-duration_fits = np.array(duration_fits)
-popularities = np.array(popularities)
-penalties = np.array(penalties)
+def compute_query_match(embeddings, query_vec):
+    if query_vec is None:
+        return np.zeros(embeddings.shape[0])
+    sims = cosine_similarity(embeddings, query_vec)[:, 0]
+    return np.clip(sims, 0.0, 1.0)
 
-# ---------------------------- Relevance Score ----------------------------
-# Potential weight tweaks by activity
-weights = DEFAULT_WEIGHTS.copy()
-if activity == "Sleep":
-    weights["wA"] += 0.05; weights["wI"] += 0.05; weights["wQ"] -= 0.05
-if activity == "Workout":
-    weights["wA"] += 0.05; weights["wP"] += 0.05; weights["wI"] -= 0.05
 
-relevance = (
-    weights["wI"]*interest_sims +
-    weights["wA"]*activity_fits +
-    weights["wQ"]*query_sims +
-    weights["wP"]*popularities +
-    weights["wD"]*duration_fits
-) - penalties  # subtract per-show penalty
+# -----------------------------
+# MMR diversification
+# -----------------------------
 
-# Clip 0..1 for display
-rel_display = np.clip(relevance, 0, 1)
+def mmr_select(candidates_df, relevance, sim_matrix, lambda_div):
+    n = len(candidates_df)
+    if n == 0:
+        return []
 
-# ---------------------------- MMR Diversification ----------------------------
-# Greedy selection with guardrails
-def mmr_select(k, lam, candidate_indices, tfidf_indices, relevance_scores):
     selected = []
-    selected_set = set()
-    same_show_counts = {}
-    seen = st.session_state.seen_item_ids
+    remaining = list(range(n))
+    show_counts = {}
+    shown_items = st.session_state.get("shown_items", set())
 
-    # Precompute cosine sim matrix among candidates (sparse via vector ops on demand)
-    def sim(i, j):
-        # cosine between X[cand_i] and X[cand_j]
-        return float(cosine_similarity(X[[tfidf_indices[i]]], X[[tfidf_indices[j]]])[0,0])
-
-    # ensure at least one novel if lambda >= 0.5 (novel = not in seen set)
-    need_novel = lam >= 0.5
-
-    while len(selected) < k and candidate_indices:
+    while remaining and len(selected) < min(TOP_K, n):
         best_idx = None
-        best_score = -1e9
-        for local_idx, cand in enumerate(candidate_indices):
-            ridx = tfidf_indices[cand]
-            row = df.iloc[ridx]
-            # Guardrail: no more than 2 eps from same show in Top-5
-            if len(selected) < 5:
-                scount = same_show_counts.get(row["show_id"], 0)
-                if scount >= 2:
-                    continue
-            # MMR score
+        best_score = None
+
+        for i in remaining:
+            row = candidates_df.iloc[i]
+            show_id = row["show_id"]
+            ep_id = row["episode_id"]
+
+            # no more than 2 episodes per show in Top-5
+            if len(selected) < 5 and show_counts.get(show_id, 0) >= 2:
+                continue
+
             if not selected:
-                score = relevance_scores[cand]
+                score = relevance[i]
             else:
-                max_sim_to_S = 0.0
-                for s_local in selected:
-                    max_sim_to_S = max(max_sim_to_S, sim(cand, s_local))
-                score = lam*relevance_scores[cand] - (1-lam)*max_sim_to_S
-            # Favor novel if needed: add small epsilon if not seen
-            if need_novel and (row["episode_id"] not in seen):
-                score += 0.02
-            if score > best_score:
+                max_sim = max(sim_matrix[i][j] for j in selected)
+                score = lambda_div * relevance[i] - (1.0 - lambda_div) * max_sim
+
+            # novelty: slightly penalize items already shown this session
+            if lambda_div >= 0.5 and ep_id in shown_items:
+                score -= 0.02
+
+            if best_score is None or score > best_score:
                 best_score = score
-                best_idx = local_idx
+                best_idx = i
+
         if best_idx is None:
-            break
-        chosen_local = best_idx
-        chosen = candidate_indices.pop(chosen_local)
-        selected.append(chosen)
-        row = df.iloc[tfidf_indices[chosen]]
-        same_show_counts[row["show_id"]] = same_show_counts.get(row["show_id"], 0) + 1
+            # fallback: pick highest relevance remaining
+            best_idx = max(remaining, key=lambda idx: relevance[idx])
+
+        selected.append(best_idx)
+        remaining.remove(best_idx)
+
+        row_sel = candidates_df.iloc[best_idx]
+        show_id = row_sel["show_id"]
+        show_counts[show_id] = show_counts.get(show_id, 0) + 1
 
     return selected
 
-# Candidate arrays
-candidate_local_indices = list(range(len(filtered)))
-tfidf_indices = filtered.index.to_list()  # indices into df/X
-selected_locals = mmr_select(k=10, lam=lam, candidate_indices=candidate_local_indices, tfidf_indices=tfidf_indices, relevance_scores=relevance)
-# Ensure at least 1 novel item if λ ≥ 0.5
-if lam >= 0.5 and selected_locals:
-    seen = st.session_state.seen_item_ids
-    selected_eids = [df.iloc[tfidf_indices[i]]["episode_id"] for i in selected_locals]
-    has_novel = any(eid not in seen for eid in selected_eids)
-    if not has_novel:
-        # Find best novel candidate by relevance (desc) that isn't already selected and respects Top-5 guardrail
-        rel_order = sorted(range(len(filtered)), key=lambda i: relevance[i], reverse=True)
-        # Compute show counts in Top-5
-        show_counts = {}
-        for i, loc in enumerate(selected_locals[:5]):
-            sid = df.iloc[tfidf_indices[loc]]["show_id"]
-            show_counts[sid] = show_counts.get(sid, 0) + 1
-        replacement_idx = None
-        candidate_new = None
-        for loc in rel_order:
-            eid = df.iloc[tfidf_indices[loc]]["episode_id"]
-            if loc in selected_locals or eid in seen:
-                continue
-            sid = df.iloc[tfidf_indices[loc]]["show_id"]
-            # Respect "≤2 episodes from same show in Top-5"
-            if show_counts.get(sid,0) >= 2 and len(selected_locals) >= 5:
-                continue
-            candidate_new = loc
-            break
-        if candidate_new is not None:
-            # Replace the last item to inject novelty
-            selected_locals[-1] = candidate_new
+
+# -----------------------------
+# Explainability
+# -----------------------------
+
+def get_top_terms_for_row(row, vectorizer, X, top_k=15):
+    idx = int(row["tfidf_index"])
+    vec = X[idx].toarray().ravel()
+    vocab = vectorizer.vocabulary_
+    inv_vocab = {v: k for k, v in vocab.items()}
+    top_idx = vec.argsort()[::-1][:top_k]
+    terms = []
+    for i in top_idx:
+        if vec[i] <= 0:
+            continue
+        term = inv_vocab.get(i)
+        if term:
+            terms.append(term)
+    return terms
 
 
-# Mark seen items (impressions)
-if selected_locals and st.session_state.first_impression_ts is None:
-    st.session_state.first_impression_ts = time.time()
+def because_you_liked(row, podcasts_df):
+    liked_ids = set(st.session_state.get("liked_items", set())) | set(
+        st.session_state.get("saved_items", set())
+    )
+    if not liked_ids:
+        return []
 
-# Prepare display data
-disp_rows = []
-for local_idx in selected_locals:
-    global_idx = tfidf_indices[local_idx]
-    row = df.iloc[global_idx].copy()
-    row["_InterestFit"] = float(interest_sims[local_idx]) if len(interest_sims)>0 else 0.0
-    row["_ActivityFit"] = float(activity_fits[local_idx]) if len(activity_fits)>0 else 0.0
-    row["_QueryMatch"] = float(query_sims[local_idx]) if len(query_sims)>0 else 0.0
-    row["_Popularity"] = float(popularities[local_idx]) if len(popularities)>0 else 0.0
-    row["_DurationFit"] = float(duration_fits[local_idx]) if len(duration_fits)>0 else 0.0
-    row["_Relevance"] = float(rel_display[local_idx]) if len(rel_display)>0 else 0.0
-    disp_rows.append(row)
+    row_tags = {
+        t.strip().lower()
+        for t in str(row.get("tags", "")).split(",")
+        if t.strip()
+    }
+    liked = podcasts_df[podcasts_df["episode_id"].isin(liked_ids)]
+    suggestions = []
+    for _, liked_row in liked.iterrows():
+        liked_tags = {
+            t.strip().lower()
+            for t in str(liked_row.get("tags", "")).split(",")
+            if t.strip()
+        }
+        if row_tags & liked_tags:
+            suggestions.append(liked_row["show_title"])
+    # unique and up to 2
+    suggestions = list(dict.fromkeys(suggestions))[:2]
+    return suggestions
 
-# Log impressions and update seen set
-for r in disp_rows:
-    if r["episode_id"] not in st.session_state.seen_item_ids:
-        st.session_state.seen_item_ids.add(r["episode_id"])
-    log_event(st.session_state.session_id, "impression", activity, r["episode_id"], {"show_id": r["show_id"]})
 
-# ---------------------------- Metrics Panel ----------------------------
-with st.expander("📈 Metrics (session)", expanded=False):
-    ensure_telemetry_file()
+def build_explain_text(activity, interest_terms, activity_keywords, query_terms, because):
+    parts = []
+    if activity_keywords:
+        parts.append(
+            f"Fits your {activity.lower()} via {', '.join(activity_keywords[:2])}."
+        )
+    if interest_terms:
+        parts.append(
+            f"Overlaps with your interests in {', '.join(interest_terms[:2])}."
+        )
+    if query_terms:
+        parts.append(
+            f"Matches your search for {', '.join(query_terms[:2])}."
+        )
+    if because:
+        parts.append(
+            f"Similar to your liked shows: {', '.join(because[:2])}."
+        )
+    if not parts:
+        parts.append("Recommended based on activity fit and popularity.")
+    return " ".join(parts)
+
+
+def build_explain_data(row, podcasts_df, vectorizer, X, query):
+    activity_label = st.session_state.get("current_activity_label", "Commute")
+    activity = activity_label.split(":")[0]
+
+    top_terms = get_top_terms_for_row(row, vectorizer, X, top_k=20)
+
+    # interest overlap
+    interest_weights = {}
+    for source in ("chip_interest_terms", "feedback_interest_terms"):
+        for term, w in st.session_state.get(source, {}).items():
+            interest_weights[term] = interest_weights.get(term, 0.0) + float(w)
+    interest_terms = [t for t in top_terms if t in interest_weights]
+    interest_terms = interest_terms[:5]
+
+    tags = [
+        t.strip().lower()
+        for t in str(row.get("tags", "")).split(",")
+        if t.strip()
+    ]
+    tag_set = set(tags)
+
+    if activity == "Sleep":
+        activity_keywords = [t for t in tags if t in SLEEP_TAGS][:5]
+    elif activity == "Focus":
+        activity_keywords = [t for t in tags if t in FOCUS_POS_TAGS][:5]
+    elif activity == "Workout":
+        activity_keywords = [t for t in tags if t in WORKOUT_TAGS][:5]
+    elif activity == "Commute":
+        activity_keywords = [t for t in tags if t in COMMUTE_TAGS][:5]
+    else:
+        activity_keywords = list(tag_set)[:5]
+
+    query_terms = []
+    if query:
+        q_tokens = set(query.lower().split())
+        query_terms = [t for t in top_terms if t in q_tokens][:5]
+
+    because = because_you_liked(row, podcasts_df)
+    text = build_explain_text(activity, interest_terms, activity_keywords, query_terms, because)
+
+    return {
+        "top_terms": top_terms,
+        "interest_terms": interest_terms,
+        "activity_keywords": activity_keywords,
+        "query_terms": query_terms,
+        "because": because,
+        "text": text,
+    }
+
+
+# -----------------------------
+# LLM review summarization
+# -----------------------------
+
+def summarize_reviews(show_id, show_title):
+    cache = st.session_state.llm_summaries
+    if show_id in cache:
+        return cache[show_id]
+
+    reviews = [r for r in load_reviews() if r.get("podcast_id") == show_id]
+    if not reviews:
+        summary = "No user reviews available yet."
+        cache[show_id] = summary
+        st.session_state.llm_summaries = cache
+        return summary
+
+    # Take up to 20 most recent reviews
+    reviews_sorted = sorted(reviews, key=lambda r: r.get("created_at", ""))
+    recent = reviews_sorted[-20:]
+
+    snippets = []
+    for r in recent:
+        title = (r.get("title") or "").strip()
+        content = (r.get("content") or "").strip()
+        rating = r.get("rating", "")
+        parts = []
+        if rating != "":
+            parts.append(f"Rating {rating}/5")
+        if title:
+            parts.append(title)
+        if content:
+            parts.append(content)
+        snippets.append(" - ".join(parts))
+
+    reviews_block = "\n".join(f"- {s}" for s in snippets)
+
+    prompt = f"""You are an assistant summarizing user reviews for a podcast.
+
+Podcast title: {show_title}
+
+Here are some user reviews (each bullet is one review; they may disagree):
+
+{reviews_block}
+
+Task:
+- Summarize the overall listener opinion in 2–3 concise sentences.
+- Mention both positive and negative aspects if they appear.
+- Highlight recurring themes (e.g., pace, depth, host style, audio quality).
+- Do not include user names or any personal identifiers.
+- Keep a neutral, analytical tone (not promotional)."""
+
+    api_key = os.environ.get("TOGETHER_API_KEY")
+    if not api_key:
+        summary = "Together API key is not configured. Please set TOGETHER_API_KEY."
+        cache[show_id] = summary
+        st.session_state.llm_summaries = cache
+        return summary
+
+    client = Together(api_key=api_key)
+
     try:
-        tdf = pd.read_csv(TELEMETRY_PATH)
-        sess = tdf[tdf["session_id"] == st.session_state.session_id]
-        plays = (sess["event_type"] == "play").sum()
-        clicks = (sess["event_type"] == "click").sum()
-        impressions = (sess["event_type"] == "impression").sum()
-        saves = (sess["event_type"] == "save").sum()
-        dislikes = (sess["event_type"] == "dislike").sum()
-        ctr = (plays / impressions)*100 if impressions else 0.0
-        st.write(f"Impressions: **{impressions}**  |  Plays: **{plays}**  |  Saves: **{saves}**  |  Dislikes: **{dislikes}**  |  CTR to play: **{ctr:.1f}%**")
-        # time-to-first-play
-        if st.session_state.first_impression_ts and st.session_state.first_play_ts:
-            ttfp = st.session_state.first_play_ts - st.session_state.first_impression_ts
-            st.write(f"Time‑to‑first‑play: **{ttfp:.1f}s**")
+        response = client.chat.completions.create(
+            model="meta-llama/Llama-3.2-3B-Instruct-Turbo",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        summary = response.choices[0].message.content.strip()
+        cache[show_id] = summary
+        st.session_state.llm_summaries = cache
+        return summary
     except Exception as e:
-        st.write("No telemetry yet.")
+        log_event(
+            "review_summary_error",
+            st.session_state.get("current_activity_label", ""),
+            item_id=show_id,
+            extra={"error": str(e)},
+        )
+        return "Couldn't load review summary. Please try again later."
 
-# ---------------------------- Helper: Explainability ----------------------------
-def top_overlap_terms(item_idx, ref_vec, k=5):
-    if ref_vec is None: return []
-    # contribution approximated by elementwise product of TF-IDF values
-    item_vec = X[item_idx]
-    # Convert sparse to arrays
-    iv = item_vec.toarray().flatten()
-    rv = ref_vec.toarray().flatten()
-    contrib = iv * rv
-    top_ids = np.argsort(contrib)[::-1][:k]
-    terms = vectorizer.get_feature_names_out()
-    return [terms[i] for i in top_ids if contrib[i] > 0][:k]
 
-def query_hit_tokens(item_idx, q_vec, k=5):
-    if q_vec is None: return []
-    return top_overlap_terms(item_idx, q_vec, k)
+# -----------------------------
+# Feedback handlers
+# -----------------------------
 
-def activity_keywords(activity):
-    b = ACTIVITY_TAG_BIASES.get(activity, {"pos":[], "neg":[]})
-    return list(dict.fromkeys(b.get("pos", []) + b.get("neg", [])))[:5]
+def handle_like(row, activity_label, vectorizer, X):
+    ep_id = row["episode_id"]
+    show_id = row["show_id"]
+    st.session_state.liked_items.add(ep_id)
+    st.session_state.liked_shows.add(show_id)
 
-# ---------------------------- Render Cards ----------------------------
-st.subheader("Top Picks")
-if hide_explicit and activity in ["Sleep","Focus"]:
-    st.caption("Explicit content hidden by default for this activity.")
+    top_terms = get_top_terms_for_row(row, vectorizer, X, top_k=10)
+    add_feedback_interest(top_terms, delta=0.7)
+    log_event("like", activity_label, item_id=ep_id, extra={"show_id": show_id})
 
-if len(disp_rows) == 0:
-    st.warning("No results with current filters. Try widening the duration range or changing freshness.")
-else:
-    for r in disp_rows:
-        with st.container():
-            st.markdown('<div class="card">', unsafe_allow_html=True)
-            c1, c2 = st.columns([0.18, 0.82])
-            with c1:
-                # Emoji art placeholder based on tags
-                tagstr = str(r["tags"]).lower()
-                emoji = "🎧"
-                if "mystery" in tagstr or "investigation" in tagstr: emoji = "🕵️"
-                elif "comedy" in tagstr or "humor" in tagstr: emoji = "😂"
-                elif "finance" in tagstr or "business" in tagstr: emoji = "💼"
-                elif "ai" in tagstr or "technology" in tagstr or "software" in tagstr: emoji = "🤖"
-                elif "news" in tagstr or "briefing" in tagstr: emoji = "📰"
-                elif "sports" in tagstr or "football" in tagstr: emoji = "⚽️"
-                elif "calm" in tagstr or "stoicism" in tagstr: emoji = "🌿"
-                elif "history" in tagstr or "documentary" in tagstr: emoji = "🏛️"
-                st.markdown(f"<div style='font-size:2.4rem;line-height:1'>{emoji}</div>", unsafe_allow_html=True)
-            with c2:
-                st.markdown(f"**{r['ep_title']}**")
-                st.caption(f"{r['show_title']} — {r['publisher']} • avg {int(r['avg_len_min'])}m • {r['freq']} • {r['language'].upper()}" + (" • 🚫 explicit" if int(r['explicit']) else ""))
-                # Badges
-                bcols = st.columns(4)
-                bcols[0].markdown(f"<span class='badge'>Interest: {r['_InterestFit']:.2f}</span>", unsafe_allow_html=True)
-                bcols[1].markdown(f"<span class='badge'>Activity: {r['_ActivityFit']:.2f}</span>", unsafe_allow_html=True)
-                bcols[2].markdown(f"<span class='badge'>Query: {r['_QueryMatch']:.2f}</span>", unsafe_allow_html=True)
-                bcols[3].markdown(f"<span class='badge'>Popularity: {r['_Popularity']:.2f}</span>", unsafe_allow_html=True)
-                st.markdown(f"<div class='reason'>Why: relevance {r['_Relevance']:.2f}. "
-                            f"{'Prefers soft start; ' if (activity=='Sleep' and int(r.get('soft_start',0))==1) else ''}"
-                            f"{'matches your interests' if r['_InterestFit']>=0.15 else 'fits activity window'}.</div>", unsafe_allow_html=True)
 
-                # Actions
-                a1, a2, a3, a4, a5 = st.columns(5, gap="small")
-                if a1.button("▶ Play latest", key=f"play_{r['episode_id']}"):
-                    log_event(st.session_state.session_id, "play", activity, r["episode_id"], {"show_id": r["show_id"]})
-                    if st.session_state.first_play_ts is None:
-                        st.session_state.first_play_ts = time.time()
-                    st.success("Pretend playing… (dummy)")
-                if a2.button("Save", key=f"save_{r['episode_id']}"):
-                    st.session_state.saved_items.add(r["episode_id"])
-                    log_event(st.session_state.session_id, "save", activity, r["episode_id"])
-                    st.toast("Saved")
-                if a3.button("👍", key=f"like_{r['episode_id']}"):
-                    # Increase interest weights around top terms and similar items
-                    idx = ep_index[r["episode_id"]]
-                    top_terms = top_overlap_terms(idx, user_vec if user_vec is not None else X[[idx]], k=5)
-                    for t in top_terms:
-                        st.session_state.interest_weights[t] = st.session_state.interest_weights.get(t, 0.0) + 0.6
-                    st.session_state.liked_items.append(r["episode_id"])
-                    log_event(st.session_state.session_id, "like", activity, r["episode_id"], {"terms": top_terms})
-                    st.rerun()
-                if a4.button("👎", key=f"dislike_{r['episode_id']}"):
-                    st.session_state.disliked_items[r["episode_id"]] = "unspecified"
-                    log_event(st.session_state.session_id, "dislike", activity, r["episode_id"])
-                    st.rerun()
-                if a5.button("⋯ Not for this activity", key=f"nfta_{r['episode_id']}"):
-                    # Down-weight ActivityFit for that show in current activity
-                    key = (activity, str(r["show_id"]))
-                    st.session_state.activity_penalties[key] = min(0.4, st.session_state.activity_penalties.get(key, 0.0) + 0.2)
-                    log_event(st.session_state.session_id, "not_for_activity", activity, r["episode_id"], {"show_id": r["show_id"]})
-                    st.rerun()
+def handle_dislike(row, activity_label, reason, vectorizer, X):
+    ep_id = row["episode_id"]
+    show_id = row["show_id"]
+    st.session_state.disliked_items.add(ep_id)
 
-                # Explainability panel
-                with st.expander("Why this?"):
-                    idx = ep_index[r["episode_id"]]
-                    iterms = top_overlap_terms(idx, user_vec, k=5)
-                    qterms = query_hit_tokens(idx, q_vec, k=5)
-                    ak = activity_keywords(activity)
-                    liked_refs = [e for e in st.session_state.liked_items[-3:]]
-                    st.write({
-                        "Interest overlap": iterms,
-                        "Activity keywords": ak,
-                        "Query hits": qterms,
-                        "Because you liked": liked_refs if liked_refs else None
-                    })
+    top_terms = get_top_terms_for_row(row, vectorizer, X, top_k=10)
 
-                # Dislike reasons (if disliked, show controls)
-                if r["episode_id"] in st.session_state.disliked_items:
-                    st.markdown("---")
-                    reason = st.selectbox("Tell us why (updates suggestions instantly)", ["Too long","Not my topic","Too intense for sleep","I've heard it"], key=f"reason_{r['episode_id']}")
-                    if st.button("Apply", key=f"apply_{r['episode_id']}"):
-                        st.session_state.disliked_items[r["episode_id"]] = reason
-                        # Update biases
-                        if reason == "Too long":
-                            st.session_state.len_bias = min(1.0, st.session_state.len_bias + 0.7)
-                        elif reason == "Not my topic":
-                            # Penalize top terms of this item
-                            idx = ep_index[r["episode_id"]]
-                            top_terms = top_overlap_terms(idx, X[[idx]], k=5)
-                            for t in top_terms:
-                                st.session_state.interest_weights[t] = st.session_state.interest_weights.get(t, 0.0) - 0.8
-                        elif reason == "Too intense for sleep" and activity == "Sleep":
-                            # Penalize energetic/high-energy tags for this session
-                            for t in ["energetic","high-energy","comedy","banter"]:
-                                st.session_state.interest_weights[t] = st.session_state.interest_weights.get(t, 0.0) - 0.6
-                        elif reason == "I've heard it":
-                            # Light penalty for this show's future appearances
-                            key = (activity, str(r["show_id"]))
-                            st.session_state.activity_penalties[key] = min(0.4, st.session_state.activity_penalties.get(key, 0.0) + 0.1)
-                        log_event(st.session_state.session_id, "dislike_reason", activity, r["episode_id"], {"reason": reason})
-                        st.rerun()
+    if reason == "Too long":
+        # shift preferred window shorter for this activity
+        db = st.session_state.duration_bias
+        db[activity_label] = db.get(activity_label, 0.0) - 5.0
+        st.session_state.duration_bias = db
+    elif reason == "Not my topic":
+        add_feedback_interest(top_terms, delta=-0.7)
+        st.session_state.disliked_shows.add(show_id)
+    elif reason == "Too intense for sleep":
+        # stronger penalty for high-energy tags in Sleep
+        st.session_state.sleep_penalty_extra = st.session_state.get(
+            "sleep_penalty_extra", 0.0
+        ) + 0.3
+    elif reason == "I've heard it":
+        st.session_state.heard_items.add(ep_id)
 
-            st.markdown('</div>', unsafe_allow_html=True)
+    log_event(
+        "dislike_reason",
+        activity_label,
+        item_id=ep_id,
+        extra={"show_id": show_id, "reason": reason},
+    )
 
-# ---------------------------- Footer ----------------------------
-st.markdown(
-    """
-    <div class="app-footer">
-      <div class="bar"></div>
-      <div class="left">13</div>
-      <div class="center">Podcast Recommender | Idea deck</div>
-      <div class="right">2025</div>
-    </div>
-    """, unsafe_allow_html=True
-)
-st.caption("All signals are computed locally. No external services are used.")
+
+# -----------------------------
+# Recommendation pipeline
+# -----------------------------
+
+def recommend(
+    podcasts_df,
+    vectorizer,
+    X,
+    activity,
+    workout_mode,
+    query,
+    duration_range,
+    language,
+    is_new_only,
+    lambda_div,
+):
+    now = pd.Timestamp.now(timezone.utc)
+
+    candidates = podcasts_df.copy()
+
+    # Language filter
+    if language != "Any":
+        candidates = candidates[
+            candidates["language"].str.lower() == language.lower()
+        ]
+
+    # Safety: Sleep & Focus hide explicit episodes
+    if activity in ("Sleep", "Focus"):
+        candidates = candidates[candidates["explicit"] == 0]
+
+    # "New" filter
+    if is_new_only:
+        cutoff = now - pd.Timedelta(days=30)
+        candidates = candidates[candidates["publish_ts"] >= cutoff]
+
+    # Fallback if too strict
+    if candidates.empty:
+        candidates = podcasts_df.copy()
+        if activity in ("Sleep", "Focus"):
+            candidates = candidates[candidates["explicit"] == 0]
+
+    tfidf_idxs = candidates["tfidf_index"].tolist()
+    embeddings = X[tfidf_idxs]
+
+    interest_vec = build_interest_vector(vectorizer)
+    interest_scores = compute_interest_fit(embeddings, interest_vec)
+
+    query_vec = build_query_vector(vectorizer, query)
+    query_scores = compute_query_match(embeddings, query_vec)
+
+    # Activity & duration fit
+    slider_min, slider_max = duration_range
+    activity_scores = []
+    duration_scores = []
+    for _, row in candidates.iterrows():
+        activity_scores.append(
+            compute_activity_fit(row, activity, workout_mode)
+        )
+        duration_scores.append(
+            compute_duration_fit(row["ep_duration_min"], slider_min, slider_max)
+        )
+    activity_scores = np.array(activity_scores)
+    duration_scores = np.array(duration_scores)
+
+    pop_scores = candidates["popularity_score"].astype(float).to_numpy()
+    # Freshness boost
+    recent_mask = candidates["publish_ts"] >= (now - pd.Timedelta(days=30))
+    pop_scores = np.clip(pop_scores + recent_mask.astype(float) * 0.05, 0.0, 1.0)
+
+    # Base weights
+    wI, wA, wQ, wP, wD = 0.35, 0.25, 0.20, 0.15, 0.05
+    if activity == "Sleep":
+        wA += 0.05
+        wI -= 0.05
+    elif activity == "Workout":
+        wA += 0.05
+        wP += 0.05
+        wQ -= 0.05
+    elif activity == "Focus":
+        wI += 0.05
+        wQ += 0.05
+        wP -= 0.05
+
+    relevance = (
+        wI * interest_scores
+        + wA * activity_scores
+        + wQ * query_scores
+        + wP * pop_scores
+        + wD * duration_scores
+    )
+
+    # History & penalties
+    activity_label = st.session_state.get("current_activity_label", activity)
+    penalties = st.session_state.activity_penalties.get(activity_label, {})
+
+    liked_items = st.session_state.get("liked_items", set())
+    disliked_items = st.session_state.get("disliked_items", set())
+    heard_items = st.session_state.get("heard_items", set())
+    liked_shows = st.session_state.get("liked_shows", set())
+    disliked_shows = st.session_state.get("disliked_shows", set())
+
+    adjust = np.zeros_like(relevance)
+
+    for i, row in enumerate(candidates.itertuples()):
+        show_id = row.show_id
+        ep_id = row.episode_id
+
+        if show_id in liked_shows:
+            adjust[i] += 0.03
+        if show_id in disliked_shows:
+            adjust[i] -= 0.05
+        if ep_id in liked_items:
+            adjust[i] += 0.05
+        if ep_id in disliked_items:
+            adjust[i] -= 0.1
+        if ep_id in heard_items:
+            adjust[i] -= 0.2
+
+        adjust[i] += penalties.get(show_id, 0.0)
+
+    if lambda_div >= 0.5:
+        shown_items = st.session_state.get("shown_items", set())
+        for i, row in enumerate(candidates.itertuples()):
+            if row.episode_id in shown_items:
+                adjust[i] -= 0.02
+
+    relevance = relevance + adjust
+
+    sim_matrix = cosine_similarity(embeddings)
+    selected_local_idx = mmr_select(candidates, relevance, sim_matrix, lambda_div)
+    ranked = candidates.iloc[selected_local_idx].reset_index(drop=True)
+
+    # Update shown items for novelty tracking
+    shown_items = st.session_state.get("shown_items", set())
+    for _, row in ranked.iterrows():
+        shown_items.add(row["episode_id"])
+    st.session_state.shown_items = shown_items
+
+    return ranked
+
+
+# -----------------------------
+# UI
+# -----------------------------
+
+def main():
+    st.set_page_config(
+        page_title="Activity-Aware Podcast Recommender",
+        page_icon="🎧",
+        layout="centered",
+    )
+
+    ensure_db()
+    init_session_state()
+
+    podcasts_df = load_podcasts()
+    vectorizer, X = build_tfidf(podcasts_df)
+
+    st.title("🎧 Activity-Aware Podcast Recommender")
+    st.caption("Activity-aware ranking with explainability and LLM-based review summaries.")
+
+    # --- Activity selection ---
+
+    st.markdown("### What are you doing now?")
+    activity = st.radio(
+        "",
+        options=["Commute", "Workout", "Focus", "Sleep"],
+        horizontal=True,
+    )
+
+    workout_mode = None
+    if activity == "Workout":
+        workout_mode = st.radio(
+            "Workout type",
+            options=["Run", "Lift", "Cardio"],
+            horizontal=True,
+        )
+
+    activity_label = current_activity_label(activity, workout_mode)
+    st.session_state.current_activity = activity
+    st.session_state.current_activity_label = activity_label
+
+    # --- Query & filters ---
+
+    query = st.text_input(
+        "Optional topic or keywords",
+        placeholder='e.g. "AI ethics", "Premier League", "Stoicism"',
+    )
+
+    # Duration slider (mobile-first style)
+    target_min, target_max = get_activity_target_window(
+        activity, workout_mode, activity_label
+    )
+    duration_range = st.slider(
+        "Preferred duration (minutes)",
+        min_value=10,
+        max_value=90,
+        value=(int(max(10, target_min)), int(min(90, target_max))),
+        step=5,
+    )
+
+    col_lang, col_new, col_div = st.columns([1, 1, 2])
+    with col_lang:
+        language = st.selectbox("Language", ["Any", "en", "es", "ru"])
+    with col_new:
+        newness = st.radio(
+            "Episode type",
+            options=["Evergreen", "New (last 30 days)"],
+            index=0,
+        )
+        is_new_only = newness.startswith("New")
+    with col_div:
+        lambda_div = st.slider(
+            "More familiar  ↔  More exploratory",
+            0.0,
+            1.0,
+            0.5,
+            0.05,
+            help="Controls MMR diversification: 0 = focus on relevance, 1 = more diversity.",
+        )
+
+    # Cold start interests
+    if not st.session_state.liked_items and not st.session_state.saved_items:
+        st.info("No history yet — tuned for your activity. Pick a few topics to get started.")
+    chips_default = st.session_state.get("selected_chips", [])
+    chips = st.multiselect(
+        "Quick interests (optional)",
+        INTEREST_CHIPS,
+        default=chips_default,
+    )
+    if chips != chips_default:
+        st.session_state.selected_chips = chips
+        apply_chip_interests(chips)
+
+    st.markdown("---")
+
+    # --- Recommendations ---
+
+    ranked = recommend(
+        podcasts_df,
+        vectorizer,
+        X,
+        activity,
+        workout_mode,
+        query,
+        duration_range,
+        language,
+        is_new_only,
+        lambda_div,
+    )
+
+    if ranked.empty:
+        st.warning("No episodes found for these filters.")
+    else:
+        st.subheader("Recommended episodes")
+
+        for idx, row in ranked.iterrows():
+            ep_id = row["episode_id"]
+            show_id = row["show_id"]
+
+            log_event(
+                "impression",
+                activity_label,
+                item_id=ep_id,
+                extra={"rank": idx + 1, "lambda": lambda_div},
+            )
+
+            explain = build_explain_data(row, podcasts_df, vectorizer, X, query)
+
+            st.markdown("---")
+            with st.container():
+                # Header
+                col_icon, col_main = st.columns([1, 5])
+                with col_icon:
+                    st.markdown("### 🎙️")
+                with col_main:
+                    st.markdown(f"#### {row['ep_title']}")
+                    st.caption(f"{row['show_title']} · {row['publisher']}")
+                    st.write(
+                        f"⏱ {row['ep_duration_min']} min · {row['freq']} · "
+                        f"Popularity {row['popularity_score']:.2f}"
+                    )
+
+                    # Badges
+                    interest_label = (
+                        explain["interest_terms"][0]
+                        if explain["interest_terms"]
+                        else "mixed"
+                    )
+                    activity_kw = (
+                        explain["activity_keywords"][0]
+                        if explain["activity_keywords"]
+                        else activity
+                    )
+                    query_label = query if query else "none"
+
+                    st.markdown(
+                        f"`Interest: {interest_label}`  "
+                        f"`Activity: {activity_kw}`  "
+                        f"`Query: {query_label}`  "
+                        f"`Pop: {row['popularity_score']:.2f}`"
+                    )
+
+                    # Explainability one-liner
+                    st.write(f"**Why we think you'll like it:** {explain['text']}")
+
+                # Controls
+                col_a, col_b, col_c = st.columns([2, 3, 3])
+
+                with col_a:
+                    if st.button("▶ Play latest", key=f"play_{ep_id}"):
+                        log_event(
+                            "play",
+                            activity_label,
+                            item_id=ep_id,
+                            extra={"show_id": show_id},
+                        )
+                        if st.session_state.first_play_ts is None:
+                            st.session_state.first_play_ts = time.time()
+
+                    saved_key = f"saved_flag_{ep_id}"
+                    saved = st.session_state.get(saved_key, False)
+                    label = "💾 Save" if not saved else "✅ Saved"
+                    if st.button(label, key=f"save_{ep_id}"):
+                        saved = not saved
+                        st.session_state[saved_key] = saved
+                        if saved:
+                            st.session_state.saved_items.add(ep_id)
+                            log_event(
+                                "save",
+                                activity_label,
+                                item_id=ep_id,
+                                extra={"show_id": show_id},
+                            )
+                        else:
+                            if ep_id in st.session_state.saved_items:
+                                st.session_state.saved_items.remove(ep_id)
+
+                with col_b:
+                    reason = st.selectbox(
+                        "If you dislike, why?",
+                        ["Too long", "Not my topic", "Too intense for sleep", "I've heard it", "Other"],
+                        key=f"reason_{ep_id}",
+                    )
+                    col_like, col_dislike = st.columns(2)
+                    with col_like:
+                        if st.button("👍", key=f"like_{ep_id}"):
+                            handle_like(row, activity_label, vectorizer, X)
+                    with col_dislike:
+                        if st.button("👎", key=f"dislike_{ep_id}"):
+                            handle_dislike(row, activity_label, reason, vectorizer, X)
+
+                with col_c:
+                    if st.button("⋯ Not for this activity", key=f"na_{ep_id}"):
+                        penalties = st.session_state.activity_penalties.get(activity_label, {})
+                        penalties[show_id] = penalties.get(show_id, 0.0) - 0.5
+                        st.session_state.activity_penalties[activity_label] = penalties
+                        log_event(
+                            "not_for_activity",
+                            activity_label,
+                            item_id=ep_id,
+                            extra={"show_id": show_id},
+                        )
+
+                    col_c1, col_c2 = st.columns(2)
+                    with col_c1:
+                        if st.button("50% listened", key=f"c50_{ep_id}"):
+                            log_event(
+                                "completion_50",
+                                activity_label,
+                                item_id=ep_id,
+                                extra={"show_id": show_id},
+                            )
+                    with col_c2:
+                        if st.button("Finished", key=f"c80_{ep_id}"):
+                            log_event(
+                                "completion_80",
+                                activity_label,
+                                item_id=ep_id,
+                                extra={"show_id": show_id},
+                            )
+
+                    if st.button("Skip", key=f"skip_{ep_id}"):
+                        log_event(
+                            "skip",
+                            activity_label,
+                            item_id=ep_id,
+                            extra={"show_id": show_id},
+                        )
+
+                    # Review summary via LLM
+                    if st.button("Review summary", key=f"review_{ep_id}"):
+                        log_event(
+                            "review_summary_opened",
+                            activity_label,
+                            item_id=show_id,
+                            extra={"episode_id": ep_id},
+                        )
+                        with st.spinner("Summarizing listener reviews..."):
+                            summary = summarize_reviews(show_id, row["show_title"])
+                        st.info(summary)
+
+                    # If we already fetched summary earlier, show it
+                    if show_id in st.session_state.llm_summaries:
+                        st.caption("What other listeners say:")
+                        st.info(st.session_state.llm_summaries[show_id])
+
+                # "Why this?" panel
+                why_key = f"why_open_{ep_id}"
+                show_why = st.session_state.get(why_key, False)
+                if st.button("Why this?", key=f"why_btn_{ep_id}"):
+                    show_why = not show_why
+                    st.session_state[why_key] = show_why
+                    if show_why:
+                        log_event("why_opened", activity_label, item_id=ep_id)
+
+                if show_why:
+                    st.markdown("##### Why this recommendation?")
+                    col_w1, col_w2 = st.columns(2)
+                    with col_w1:
+                        st.write("**Interest overlap terms**")
+                        st.write(", ".join(explain["interest_terms"]) or "—")
+                        st.write("**Activity match keywords**")
+                        st.write(", ".join(explain["activity_keywords"]) or "—")
+                    with col_w2:
+                        st.write("**Query hits**")
+                        st.write(", ".join(explain["query_terms"]) or "—")
+                        st.write("**Because you liked**")
+                        st.write(", ".join(explain["because"]) or "—")
+
+    st.markdown("---")
+    render_metrics()
+
+
+if __name__ == "__main__":
+    main()
 

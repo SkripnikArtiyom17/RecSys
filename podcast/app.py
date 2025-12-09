@@ -41,18 +41,17 @@ from together import Together
 # -----------------------------
 # Together API key configuration
 # -----------------------------
-# Recommended: set TOGETHER_API_KEY as an environment variable.
-# Optional (LOCAL ONLY): you can paste your key here for quick testing.
-# !!! Do NOT commit a real key with this file to a public repo !!!
-TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  # e.g. "tg-XXXXXXXXXXXXXXXXXXXXXXXX"
+# Рекомендовано: задавать TOGETHER_API_KEY как переменную окружения.
+# Локально (НЕ в публичном репо!) можно временно вставить ключ сюда.
+TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  # например: "tg-XXXXXXXXXXXXXXXXXXXXXXXX"
 
 
 def get_together_client():
     """
     Returns (client, error_message).
 
-    If API key is not configured or client creation fails,
-    returns (None, "error text").
+    Если ключ не настроен или клиент не создаётся:
+    (None, "текст ошибки").
     """
     api_key = os.environ.get("TOGETHER_API_KEY") or TOGETHER_API_KEY_FROM_CODE
     if not api_key:
@@ -1213,8 +1212,8 @@ def main():
                             extra={"show_id": show_id},
                         )
 
-                    # Review summary (LLM over reviews.json)
-                    open_key = f"open_summary_{ep_id}"
+                    # --- Review summary via LLM ---
+                    summary_key = show_id
 
                     if st.button("Review summary", key=f"review_{ep_id}"):
                         log_event(
@@ -1224,14 +1223,18 @@ def main():
                             extra={"episode_id": ep_id},
                         )
                         with st.spinner("Summarizing listener reviews..."):
-                            summarize_reviews(show_id, row["show_title"])
-                        st.session_state[open_key] = True
+                            summary = summarize_reviews(show_id, row["show_title"])
+                        st.session_state.llm_summaries[summary_key] = summary
 
-                    expanded = st.session_state.get(open_key, False)
-                    if show_id in st.session_state.llm_summaries:
-                        with st.expander("What other listeners say", expanded=expanded):
-                            summary_text = st.session_state.llm_summaries[show_id]
-                            st.write(summary_text)
+                    with st.expander("What other listeners say", expanded=False):
+                        summary = st.session_state.llm_summaries.get(summary_key)
+                        if summary:
+                            st.write(summary)
+                        else:
+                            st.write(
+                                "Click **Review summary** to generate a short summary of "
+                                "listener reviews for this podcast."
+                            )
 
                 why_key = f"why_open_{ep_id}"
                 show_why = st.session_state.get(why_key, False)
@@ -1261,3 +1264,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

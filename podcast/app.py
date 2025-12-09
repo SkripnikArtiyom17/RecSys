@@ -43,7 +43,7 @@ from together import Together
 # Recommended: keep the key in the TOGETHER_API_KEY env var.
 # For quick local tests you can TEMPORARILY put the key here
 # (but never commit a real key to public Git).
-TOGETHER_API_KEY_FROM_CODE = ""  # e.g. "tg-xxxxxxxxxxxxxxxxxxxx"
+TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  # e.g. "tg-xxxxxxxxxxxxxxxxxxxx"
 
 
 def get_together_client():

@@ -155,11 +155,14 @@ def normalize_podcast_id(value: str) -> str:
 @st.cache_data
 def load_reviews(path=REVIEWS_JSON):
     """
-    Читает reviews.json (JSONL) и для каждого отзыва добавляет
-    нормализованный podcast_id_norm.
+    Reads reviews.json (JSONL) and, for each review, adds a normalized
+    podcast_id_norm field that we can match against show_id.
     """
     reviews = []
+
     if not os.path.exists(path):
+        # No file — просто возвращаем пустой список, саммари тогда скажет,
+        # что отзывов нет
         return reviews
 
     with open(path, "r", encoding="utf-8") as f:
@@ -174,8 +177,11 @@ def load_reviews(path=REVIEWS_JSON):
                 obj["podcast_id_norm"] = normalize_podcast_id(pid_raw)
                 reviews.append(obj)
             except json.JSONDecodeError:
+                # пропускаем битые строки
                 continue
+
     return reviews
+
 
 
 @st.cache_data

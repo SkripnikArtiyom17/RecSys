@@ -34,24 +34,24 @@ import pandas as pd
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
 from together import Together
 
 
 # -----------------------------
 # Together API key configuration
 # -----------------------------
-# Рекомендовано: задавать TOGETHER_API_KEY как переменную окружения.
-# Локально (НЕ в публичном репо!) можно временно вставить ключ сюда.
-TOGETHER_API_KEY_FROM_CODE = "tgp_v1_DYc1X5IbJJq8f0UkShffPUCHLFKLz4THrvOaZfJepwY"  # например: "tg-XXXXXXXXXXXXXXXXXXXXXXXX"
+# Recommended: keep the key in the TOGETHER_API_KEY env var.
+# For quick local tests you can TEMPORARILY put the key here
+# (but never commit a real key to public Git).
+TOGETHER_API_KEY_FROM_CODE = ""  # e.g. "tg-xxxxxxxxxxxxxxxxxxxx"
 
 
 def get_together_client():
     """
     Returns (client, error_message).
 
-    Если ключ не настроен или клиент не создаётся:
-    (None, "текст ошибки").
+    If the key is missing or client creation fails:
+    (None, "error text").
     """
     api_key = os.environ.get("TOGETHER_API_KEY") or TOGETHER_API_KEY_FROM_CODE
     if not api_key:
@@ -59,6 +59,7 @@ def get_together_client():
             "Together API key is not configured. "
             "Set TOGETHER_API_KEY env var or fill TOGETHER_API_KEY_FROM_CODE in app.py."
         )
+
     try:
         client = Together(api_key=api_key)
         return client, None
@@ -123,13 +124,13 @@ CHIP_TO_TERMS = {
 
 def normalize_podcast_id(value: str) -> str:
     """
-    Приводим разные варианты ID к одному формату.
-    Примеры:
-        's1'   -> 'S001'
-        'S01'  -> 'S001'
-        'S001' -> 'S001'
-        '1'    -> 'S001'
-    Любые другие строки просто переводим в upper-case.
+    Normalise podcast/show IDs to a common format.
+
+    Examples:
+        "s1"   -> "S001"
+        "S01"  -> "S001"
+        "S001" -> "S001"
+        "1"    -> "S001"
     """
     if value is None:
         return ""
@@ -148,21 +149,121 @@ def normalize_podcast_id(value: str) -> str:
 # Data loading & TF-IDF
 # -----------------------------
 
-"""
+@st.cache_data
+def load_podcasts(path=PODCASTS_CSV):
+    """
+    Load sample_podcasts.csv robustly:
+    - Handle malformed rows via on_bad_lines='skip'
+    - Auto-detect ';' separator if needed
+    - Normalise column names and, if needed, overwrite header by position
+    """
+    if not os.path.exists(path):
+        st.error(f"Missing data file: {path}")
+        st.stop()
 
+    # 1. First attempt: standard CSV
+    try:
+        df = pd.read_csv(path)
+    except pd.errors.ParserError:
+        st.warning(
+            "sample_podcasts.csv contains some malformed rows — "
+            "they will be skipped (on_bad_lines='skip')."
+        )
+        df = pd.read_csv(path, engine="python", on_bad_lines="skip")
+
+    # 2. Clean column names (strip spaces & BOM)
+    def _clean_col(c):
+        s = str(c)
+        return s.strip().lstrip("\ufeff")
+
+    df.columns = [_clean_col(c) for c in df.columns]
+
+    # 3. If we see a single column with ';' in name → probably MS Excel CSV with ';'
+    if len(df.columns) == 1 and ";" in df.columns[0]:
+        df = pd.read_csv(path, sep=";", engine="python", on_bad_lines="skip")
+        df.columns = [_clean_col(c) for c in df.columns]
+
+    # 4. Check required columns
+    required_cols = ["ep_duration_min", "ep_title", "ep_desc", "show_id", "episode_id"]
+
+    expected_header = [
+        "show_id",
+        "show_title",
+        "publisher",
+        "tags",
+        "language",
+        "explicit",
+        "avg_len_min",
+        "freq",
+        "episode_id",
+        "ep_title",
+        "ep_desc",
+        "ep_duration_min",
+        "soft_start",
+        "publish_ts",
+        "popularity_score",
+    ]
+
+    missing = [c for c in required_cols if c not in df.columns]
+
+    # If required columns are missing BUT we have exactly 15 cols,
+    # assume order is correct and overwrite header.
+    if missing and len(df.columns) == len(expected_header):
+        st.warning(
+            "sample_podcasts.csv has unexpected column names; "
+            "header will be overwritten with expected columns."
+        )
+        df.columns = expected_header
+        missing = [c for c in required_cols if c not in df.columns]
+
+    if missing:
+        st.error(
+            "sample_podcasts.csv is missing required columns: "
+            + ", ".join(missing)
+            + "\n\nCurrent columns are: "
+            + ", ".join(map(str, df.columns))
+            + "\n\nExpected header:\n"
+            + ",".join(expected_header)
+        )
+        st.stop()
+
+    # Basic sanitation
+    for col in ["explicit", "soft_start"]:
+        if col in df.columns:
+            df[col] = df[col].astype(int)
+        else:
+            df[col] = 0
+
+    if "avg_len_min" not in df.columns:
+        df["avg_len_min"] = df["ep_duration_min"]
+
+    if "popularity_score" not in df.columns:
+        df["popularity_score"] = 0.5
+
+    # publish_ts
+    if "publish_ts" in df.columns:
+        df["publish_ts"] = pd.to_datetime(
+            df["publish_ts"], errors="coerce", utc=True
+        )
+    else:
+        df["publish_ts"] = pd.Timestamp("2025-01-01", tz="UTC")
+
+    df = df.reset_index(drop=True)
+    df["tfidf_index"] = np.arange(len(df))
+    return df
 
 
 @st.cache_data
 def load_reviews(path=REVIEWS_JSON):
     """
-    Reads reviews.json (JSONL) and, for each review, adds a normalized
-    podcast_id_norm field that we can match against show_id.
+    Reads reviews.json (JSONL). Each line is one JSON object
+    with at least the field "podcast_id". We also add:
+      - podcast_id_raw  (string)
+      - podcast_id_norm (normalised via normalize_podcast_id)
     """
     reviews = []
 
     if not os.path.exists(path):
-        # No file — просто возвращаем пустой список, саммари тогда скажет,
-        # что отзывов нет
         return reviews
 
     with open(path, "r", encoding="utf-8") as f:
@@ -177,16 +278,18 @@ def load_reviews(path=REVIEWS_JSON):
                 obj["podcast_id_norm"] = normalize_podcast_id(pid_raw)
                 reviews.append(obj)
             except json.JSONDecodeError:
-                # пропускаем битые строки
+                # skip malformed lines
                 continue
 
     return reviews
 
 
-
 @st.cache_data
 def build_tfidf(podcasts_df: pd.DataFrame):
-    """Build TF-IDF model over ep_title + ep_desc + tags."""
+    """
+    Build TF-IDF model over ep_title + ep_desc + tags.
+    Returns (vectorizer, X_sparse_matrix).
+    """
     corpus = (
         podcasts_df["ep_title"].fillna("")
         + " "
@@ -657,17 +760,16 @@ def build_explain_data(row, podcasts_df, vectorizer, X, query):
 
 def summarize_reviews(show_id, show_title):
     """
-    Делает краткое саммари отзывов по подкасту (show_id) на основе reviews.json
-    с помощью Together LLM.
+    Summarise user reviews for a given show_id using Together LLM.
 
-    Возвращает текст саммари и кеширует результат в session_state.
+    Matching is done on the normalised ID (S001, S002, ...),
+    so show_id and podcast_id may differ in raw format.
     """
     cache = st.session_state.llm_summaries
     if show_id in cache:
         return cache[show_id]
 
     all_reviews = load_reviews()
-
     if not all_reviews:
         summary = (
             "Review dataset is empty or data/reviews.json is missing.\n"
@@ -1239,4 +1341,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

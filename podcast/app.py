@@ -152,16 +152,16 @@ def normalize_podcast_id(value: str) -> str:
 @st.cache_data
 def load_podcasts(path=PODCASTS_CSV):
     """
-    Load sample_podcasts.csv robustly:
-    - Handle malformed rows via on_bad_lines='skip'
-    - Auto-detect ';' separator if needed
-    - Normalise column names and, if needed, overwrite header by position
+    Robust loader for sample_podcasts.csv:
+    - handles malformed rows via on_bad_lines='skip'
+    - auto-detects separator: comma, semicolon or TAB / whitespace
+    - normalizes column names
     """
     if not os.path.exists(path):
         st.error(f"Missing data file: {path}")
         st.stop()
 
-    # 1. First attempt: standard CSV
+    # 1. первая попытка — обычный CSV
     try:
         df = pd.read_csv(path)
     except pd.errors.ParserError:
@@ -171,19 +171,30 @@ def load_podcasts(path=PODCASTS_CSV):
         )
         df = pd.read_csv(path, engine="python", on_bad_lines="skip")
 
-    # 2. Clean column names (strip spaces & BOM)
-    def _clean_col(c):
+    # 2. нормализуем имена колонок (убираем BOM и пробелы)
+    def _clean_col(c: str) -> str:
         s = str(c)
         return s.strip().lstrip("\ufeff")
 
     df.columns = [_clean_col(c) for c in df.columns]
 
-    # 3. If we see a single column with ';' in name → probably MS Excel CSV with ';'
-    if len(df.columns) == 1 and ";" in df.columns[0]:
-        df = pd.read_csv(path, sep=";", engine="python", on_bad_lines="skip")
+    # 3. если у нас ВСЕГО ОДНА колонка — значит разделитель не угадали
+    if len(df.columns) == 1:
+        col0 = df.columns[0]
+
+        # TAB-separated (как в твоём файле)
+        if "\t" in col0:
+            df = pd.read_csv(path, sep="\t", engine="python", on_bad_lines="skip")
+        # Excel / ; - separated
+        elif ";" in col0:
+            df = pd.read_csv(path, sep=";", engine="python", on_bad_lines="skip")
+        # запасной вариант — по любому пробельному символу
+        else:
+            df = pd.read_csv(path, sep=r"\s+", engine="python", on_bad_lines="skip")
+
         df.columns = [_clean_col(c) for c in df.columns]
 
-    # 4. Check required columns
+    # 4. проверяем, что есть все обязательные колонки
     required_cols = ["ep_duration_min", "ep_title", "ep_desc", "show_id", "episode_id"]
 
     expected_header = [
@@ -206,8 +217,7 @@ def load_podcasts(path=PODCASTS_CSV):
 
     missing = [c for c in required_cols if c not in df.columns]
 
-    # If required columns are missing BUT we have exactly 15 cols,
-    # assume order is correct and overwrite header.
+    # если что-то отсутствует, но колонок ровно 15 — навешиваем ожидаемый хедер по порядку
     if missing and len(df.columns) == len(expected_header):
         st.warning(
             "sample_podcasts.csv has unexpected column names; "
@@ -227,7 +237,8 @@ def load_podcasts(path=PODCASTS_CSV):
         )
         st.stop()
 
-    # Basic sanitation
+    # --- дальше всё как раньше ---
+
     for col in ["explicit", "soft_start"]:
         if col in df.columns:
             df[col] = df[col].astype(int)
@@ -240,17 +251,12 @@ def load_podcasts(path=PODCASTS_CSV):
     if "popularity_score" not in df.columns:
         df["popularity_score"] = 0.5
 
-    # publish_ts
-    if "publish_ts" in df.columns:
-        df["publish_ts"] = pd.to_datetime(
-            df["publish_ts"], errors="coerce", utc=True
-        )
-    else:
-        df["publish_ts"] = pd.Timestamp("2025-01-01", tz="UTC")
+    df["publish_ts"] = pd.to_datetime(df["publish_ts"], errors="coerce", utc=True)
 
     df = df.reset_index(drop=True)
     df["tfidf_index"] = np.arange(len(df))
     return df
+
 
 
 @st.cache_data

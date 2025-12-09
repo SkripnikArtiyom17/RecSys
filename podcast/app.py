@@ -150,11 +150,24 @@ def normalize_podcast_id(value: str) -> str:
 
 @st.cache_data
 def load_podcasts(path=PODCASTS_CSV):
+    """
+    Загружает sample_podcasts.csv и устойчиво обрабатывает возможные битые строки.
+    Если стандартный парсер падает с ParserError, пробуем ещё раз с on_bad_lines='skip'.
+    """
     if not os.path.exists(path):
         st.error(f"Missing data file: {path}")
         st.stop()
 
-    df = pd.read_csv(path)
+    try:
+        # Сначала пробуем обычный быстрый парсер
+        df = pd.read_csv(path)
+    except pd.errors.ParserError:
+        # Если CSV кривой — предупреждаем и пробуем более толерантный режим
+        st.warning(
+            "sample_podcasts.csv contains some malformed rows — "
+            "they will be skipped (on_bad_lines='skip')."
+        )
+        df = pd.read_csv(path, engine="python", on_bad_lines="skip")
 
     # Basic sanitation
     for col in ["explicit", "soft_start"]:
@@ -163,8 +176,14 @@ def load_podcasts(path=PODCASTS_CSV):
         else:
             df[col] = 0
 
-    if "ep_duration_min" not in df.columns:
-        st.error("sample_podcasts.csv must contain 'ep_duration_min' column.")
+    # Обязательные поля
+    required_cols = ["ep_duration_min", "ep_title", "ep_desc", "show_id", "episode_id"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        st.error(
+            "sample_podcasts.csv is missing required columns: "
+            + ", ".join(missing)
+        )
         st.stop()
 
     if "avg_len_min" not in df.columns:
@@ -174,13 +193,18 @@ def load_podcasts(path=PODCASTS_CSV):
         df["popularity_score"] = 0.5
 
     # Parse timestamps as UTC-aware datetimes
-    df["publish_ts"] = pd.to_datetime(
-        df["publish_ts"], errors="coerce", utc=True
-    )
+    if "publish_ts" in df.columns:
+        df["publish_ts"] = pd.to_datetime(
+            df["publish_ts"], errors="coerce", utc=True
+        )
+    else:
+        # если вдруг нет — создаём фиктивную дату, чтобы логика "новых" выпусков не падала
+        df["publish_ts"] = pd.Timestamp("2025-01-01", tz="UTC")
 
     df = df.reset_index(drop=True)
     df["tfidf_index"] = np.arange(len(df))
     return df
+
 
 
 @st.cache_data

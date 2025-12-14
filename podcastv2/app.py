@@ -726,12 +726,18 @@ def main():
             telemetry_log("save", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
             st.toast("Saved. Logged.")
 
-        with st.expander("Details (Why this? / Review summary)"):
-            if st.button("Why this?", key=f"why_{episode_id}"):
-                telemetry_log("why_opened", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
-            st.markdown(explain_row(row, activity, workout_submode, query, episodes))
+with st.expander("Details (Review summary)"):
+    st.divider()
 
-            st.divider()
+    # STRICT: Together call ONLY on click
+    if st.button("Review summary", key=f"sum_{show_id}_{episode_id}"):
+        telemetry_log("review_summary_opened", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
+        try:
+            summary = together_summarize_reviews(show_id, reviews)
+            st.markdown(summary)
+        except Exception as e:
+            telemetry_log("review_summary_error", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id, "error": str(e)})
+            st.error(f"Review summary error: {e}")
 
             # STRICT: Together call ONLY on click
             if st.button("Review summary", key=f"sum_{show_id}_{episode_id}"):

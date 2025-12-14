@@ -12,14 +12,6 @@ import streamlit as st
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from pathlib import Path
-import streamlit as st
-
-for folder in ["podcastv2", "podcast", "Midtermproject"]:
-    p = Path(folder)
-    st.write(folder, "exists:", p.exists(), "is_dir:", p.is_dir())
-    if p.exists() and p.is_dir():
-        st.write(f"{folder}/ files:", [x.name for x in p.iterdir()])
 
 
 
@@ -27,8 +19,8 @@ for folder in ["podcastv2", "podcast", "Midtermproject"]:
 # Constants
 # ==========
 
-DATA_CSV_PATH = "Data/sample_podcasts.csv"
-REVIEWS_JSONL_PATH = "Data/reviews.json"
+DATA_CSV_PATH = "podcastv2/Data/sample_podcasts.csv"
+REVIEWS_JSONL_PATH = "podcastv2/Data/reviews.json"   # or .jsonl if that’s the real filename
 TELEMETRY_PATH = "telemetry.csv"
 
 # NOTE: For security, do NOT hardcode API keys in code.

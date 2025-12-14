@@ -66,9 +66,20 @@ REVIEW_FIELDS = ["podcast_id", "title", "content", "rating", "author_id", "creat
 # Together key (secure)
 # ======================
 def get_together_api_key() -> str:
-    # Streamlit Secrets ONLY (prevents stale env keys)
     if "TOGETHER_API_KEY" not in st.secrets:
         raise RuntimeError("TOGETHER_API_KEY missing in Streamlit Secrets (Settings → Secrets).")
+
+    k = str(st.secrets["TOGETHER_API_KEY"]).strip()
+
+    if not k:
+        raise RuntimeError("TOGETHER_API_KEY is empty in Streamlit Secrets.")
+
+    # Newline-safe check without escape literals
+    if 10 in (ord(ch) for ch in k) or 13 in (ord(ch) for ch in k):
+        raise RuntimeError("TOGETHER_API_KEY contains newline characters. Re-paste it cleanly in Secrets.")
+
+    return k
+
 
 def show_key_debug():
     st.sidebar.caption(f"Running: {Path(__file__).resolve()}")
@@ -79,6 +90,8 @@ def show_key_debug():
     except Exception as e:
         st.sidebar.caption("Together key ❌")
         st.sidebar.error(str(e))
+
+
 
 
     k = str(st.secrets["TOGETHER_API_KEY"]).strip()

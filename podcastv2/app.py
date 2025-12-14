@@ -3,8 +3,8 @@ import json
 import time
 import uuid
 import math
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 import numpy as np
@@ -15,81 +15,34 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
-# ======================
-# File resolution (FIX #1)
-# ======================
+# =========================
+# Hard-pinned dataset paths
+# =========================
+CSV_PATH = "podcastv2/Data/sample_podcasts.csv"
+REVIEWS_PATH_JSON = "podcastv2/Data/reviews.json"
+REVIEWS_PATH_JSONL = "podcastv2/Data/reviews.jsonl"
 
-def _repo_root() -> Path:
-    # Streamlit runs from repo root in Cloud; this is still safe locally
-    return Path.cwd()
+TELEMETRY_PATH = "telemetry.csv"
 
-def resolve_file(filename: str, extra_candidates: Optional[List[str]] = None) -> str:
-    """
-    Find filename across common project folders.
-    Does NOT create anything; only resolves existing paths.
-    """
-    root = _repo_root()
-    candidates = [
-        root / filename,
-
-        # Most common layouts in your repo
-        root / "podcastv2" / filename,
-        root / "podcastv2" / "Data" / filename,
-        root / "podcastv2" / "data" / filename,
-
-        root / "podcast" / filename,
-        root / "podcast" / "Data" / filename,
-        root / "podcast" / "data" / filename,
-
-        root / "Midtermproject" / filename,
-        root / "Midtermproject" / "Data" / filename,
-        root / "Midtermproject" / "data" / filename,
-    ]
-
-    if extra_candidates:
-        candidates.extend([root / p for p in extra_candidates])
-
-    for p in candidates:
-        if p.exists() and p.is_file():
-            return str(p)
-
-    # Debugging output in-app (helps on Streamlit Cloud)
-    st.error(f"Could not find '{filename}' in expected locations.")
-    st.write("CWD:", str(root))
-    st.write("Root files:", sorted([p.name for p in root.iterdir()]))
-
-    for folder in ["podcastv2", "podcast", "Midtermproject", "Data", "data"]:
-        fp = root / folder
-        st.write(f"{folder}/ exists:", fp.exists(), "is_dir:", fp.is_dir())
-        if fp.exists() and fp.is_dir():
-            st.write(f"{folder}/ files:", sorted([p.name for p in fp.iterdir()]))
-
-    raise FileNotFoundError(f"{filename} not found. Checked: {len(candidates)} candidate paths.")
+np.random.seed(0)
 
 
 # ======================
-# Together key (SECURE)
+# Activity configuration
 # ======================
-
-def _get_together_api_key() -> Optional[str]:
-    # Streamlit secrets is the recommended way on Streamlit Cloud
-    if "TOGETHER_API_KEY" in st.secrets:
-        v = str(st.secrets["TOGETHER_API_KEY"]).strip()
-        return v or None
-    v = os.getenv("TOGETHER_API_KEY", "").strip()
-    return v or None
-
-
-# ======================
-# Expected schema
-# ======================
-
-REQ_COLS = [
-    "show_id", "show_title", "publisher", "tags", "language", "explicit", "avg_len_min", "freq",
-    "episode_id", "ep_title", "ep_desc", "ep_duration_min", "soft_start", "publish_ts", "popularity_score",
-]
-
-REVIEW_FIELDS = ["podcast_id", "title", "content", "rating", "author_id", "created_at"]
+ACTIVITY_TERMS = {
+    "Commute": ["commute", "drive", "subway", "train", "short", "news", "update"],
+    "Workout": ["workout", "training", "run", "gym", "energy", "motivation", "pace"],
+    "Focus / Deep work": ["focus", "deep work", "concentration", "learn", "analysis", "calm"],
+    "Chores / Cleaning": ["chores", "cleaning", "house", "background", "fun", "easy"],
+    "Relax / Wind down": ["relax", "wind down", "sleep", "calm", "soothing", "slow"],
+}
+WORKOUT_SUBMODES = {
+    "Easy": ["easy", "steady", "low intensity", "calm"],
+    "HIIT": ["hiit", "intervals", "intense", "fast", "sprint"],
+    "Strength": ["strength", "lifting", "weights", "power", "sets"],
+    "Run": ["run", "pace", "cadence", "endurance"],
+}
 
 DEFAULT_WEIGHTS = {
     "InterestFit": 0.28,
@@ -99,29 +52,28 @@ DEFAULT_WEIGHTS = {
     "DurationFit": 0.10,
 }
 
-ACTIVITY_TERMS = {
-    "Commute": ["commute", "drive", "subway", "train", "short", "news", "update"],
-    "Workout": ["workout", "training", "run", "gym", "energy", "motivation"],
-    "Focus / Deep work": ["focus", "deep work", "concentration", "learn", "calm"],
-    "Chores / Cleaning": ["chores", "cleaning", "background", "fun", "easy"],
-    "Relax / Wind down": ["relax", "wind down", "sleep", "calm", "soothing"],
-}
-WORKOUT_SUBMODES = {
-    "Easy": ["easy", "steady", "low intensity", "calm"],
-    "HIIT": ["hiit", "intervals", "intense", "fast"],
-    "Strength": ["strength", "lifting", "weights", "power"],
-    "Run": ["run", "pace", "cadence", "endurance"],
-}
+REQ_COLS = [
+    "show_id", "show_title", "publisher", "tags", "language", "explicit", "avg_len_min", "freq",
+    "episode_id", "ep_title", "ep_desc", "ep_duration_min", "soft_start", "publish_ts", "popularity_score",
+]
 
-np.random.seed(0)
+REVIEW_FIELDS = ["podcast_id", "title", "content", "rating", "author_id", "created_at"]
 
-TELEMETRY_PATH = "telemetry.csv"
+
+# ======================
+# Together key (secure)
+# ======================
+def get_together_api_key() -> Optional[str]:
+    if "TOGETHER_API_KEY" in st.secrets:
+        v = str(st.secrets["TOGETHER_API_KEY"]).strip()
+        return v or None
+    v = os.getenv("TOGETHER_API_KEY", "").strip()
+    return v or None
 
 
 # ======================
 # Telemetry
 # ======================
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -140,71 +92,86 @@ def safe_str(x) -> str:
 
 
 # ======================
-# Data load (FIX #2: delimiter + types)
+# Diagnostics helpers
 # ======================
+def file_must_exist(path: str):
+    p = Path(path)
+    if not p.exists():
+        st.error(f"File not found: {path}")
+        st.write("CWD:", str(Path.cwd()))
+        st.write("Root files:", sorted([x.name for x in Path.cwd().iterdir()]))
+        st.stop()
 
+def stop_with_csv_debug(df: pd.DataFrame, title: str, missing: Optional[List[str]] = None):
+    st.error(title)
+    if missing:
+        st.write("Missing columns:", missing)
+    st.write("CSV shape:", df.shape)
+    st.write("CSV columns:", list(df.columns))
+    st.write("Head (first 3 rows):")
+    st.write(df.head(3))
+    st.stop()
+
+
+# ======================
+# Data loading (robust)
+# ======================
 @st.cache_data(show_spinner=False)
 def load_episodes(csv_path: str) -> pd.DataFrame:
-    # Robust delimiter detection
+    # Robust delimiter inference
     df = pd.read_csv(csv_path, sep=None, engine="python")
 
-    # Normalize column names (fixes " show_title " / BOM issues)
+    # Normalize column names (strip spaces + BOM)
     df.columns = [str(c).strip().replace("\ufeff", "") for c in df.columns]
 
-    # Validate required columns
     missing = [c for c in REQ_COLS if c not in df.columns]
     if missing:
-        # Debug: show first columns + first row
-        raise ValueError(
-            f"CSV missing required columns: {missing}.\n"
-            f"Found columns: {list(df.columns)}\n"
-            f"Head row: {df.head(1).to_dict(orient='records')}"
-        )
+        stop_with_csv_debug(df, "❌ CSV schema mismatch (required columns not found).", missing=missing)
 
     df = df.copy()
 
-    # Coerce numeric columns used in ranking
+    # numeric
     for c in ["avg_len_min", "ep_duration_min", "popularity_score"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df["publish_ts_num"] = pd.to_numeric(df["publish_ts"], errors="coerce")
 
-    # Fill text fields safely
+    # text fields
     text_cols = ["tags", "ep_desc", "ep_title", "show_title", "publisher", "language"]
     for c in text_cols:
-        df[c] = df[c].fillna("").astype(str)
+        df[c] = (
+            df[c]
+            .fillna("")
+            .astype(str)
+            .replace("nan", "", regex=False)
+            .replace("None", "", regex=False)
+            .str.strip()
+        )
 
-    # IMPORTANT: sometimes fields are literally "nan" strings after coercion
-    for c in text_cols:
-        df[c] = df[c].replace("nan", "", regex=False).replace("None", "", regex=False)
-
-    # Combined text
+    # combined text for TF-IDF
     df["text"] = (
-        df["show_title"].str.strip() + " " +
-        df["publisher"].str.strip() + " " +
-        df["tags"].str.strip() + " " +
-        df["ep_title"].str.strip() + " " +
-        df["ep_desc"].str.strip()
+        df["show_title"] + " " +
+        df["publisher"] + " " +
+        df["tags"] + " " +
+        df["ep_title"] + " " +
+        df["ep_desc"]
     ).str.strip()
 
-    # Diagnostics if empty
-    non_empty = int((df["text"].str.len() > 0).sum())
+    non_empty = int((df["text"] != "").sum())
     if non_empty == 0:
-        # Show evidence directly in the error to avoid guessing
-        sample = df[text_cols].head(5).to_dict(orient="records")
-        counts = {c: int((df[c].str.strip() != "").sum()) for c in text_cols}
-        raise ValueError(
-            "Loaded CSV but all text fields are empty.\n"
-            f"Non-empty counts per text col: {counts}\n"
-            f"Sample rows (text cols only): {sample}"
-        )
+        st.error("❌ Loaded CSV, but all text fields are empty.")
+        counts = {c: int((df[c].str.strip() != "").sum()) for c in ["show_title", "publisher", "tags", "ep_title", "ep_desc"]}
+        st.write("Non-empty counts per text column:", counts)
+        st.write("First 5 rows (text columns only):")
+        st.write(df[["show_title", "publisher", "tags", "ep_title", "ep_desc"]].head(5))
+        st.stop()
 
     return df
 
 @st.cache_data(show_spinner=False)
-def load_reviews_jsonl(jsonl_path: str) -> pd.DataFrame:
+def load_reviews_jsonl(path: str) -> pd.DataFrame:
     rows = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -220,61 +187,51 @@ def load_reviews_jsonl(jsonl_path: str) -> pd.DataFrame:
     rdf["rating"] = pd.to_numeric(rdf["rating"], errors="coerce")
     return rdf
 
+def load_reviews_any() -> pd.DataFrame:
+    if Path(REVIEWS_PATH_JSON).exists():
+        return load_reviews_jsonl(REVIEWS_PATH_JSON)
+    if Path(REVIEWS_PATH_JSONL).exists():
+        return load_reviews_jsonl(REVIEWS_PATH_JSONL)
+    st.error("Reviews file not found. Expected reviews.json or reviews.jsonl in podcastv2/Data/")
+    st.stop()
+
 
 # ======================
-# TF-IDF (FIX #2: empty vocab fallback)
+# TF-IDF (no crash)
 # ======================
-
 @st.cache_resource(show_spinner=False)
 def build_vectorizer_and_matrix(df: pd.DataFrame):
-    docs = df["text"].astype(str).fillna("").tolist()
+    docs = df["text"].astype(str).tolist()
 
-    # If docs are empty/blank, fail with actionable message
-    non_empty = sum(1 for d in docs if d.strip())
-    if non_empty == 0:
-        raise ValueError("All episode text fields are empty after loading. Check CSV column mapping/content.")
+    # Use stop_words=None to avoid empty-vocabulary edge case
+    vec = TfidfVectorizer(
+        stop_words=None,
+        lowercase=True,
+        ngram_range=(1, 2),
+        token_pattern=r"(?u)\b\w\w+\b",
+        max_features=40000,
+    )
+    X = vec.fit_transform(docs)
 
-    # Try with english stopwords first; if it yields empty vocab, retry without stopwords.
-    try:
-        vec = TfidfVectorizer(
-            stop_words="english",
-            max_features=40000,
-            ngram_range=(1, 2),
-            lowercase=True,
-            token_pattern=r"(?u)\b\w\w+\b",
-        )
-        X = vec.fit_transform(docs)
-        if X.shape[1] == 0:
-            raise ValueError("Empty vocabulary")
-        return vec, X
-    except ValueError:
-        # fallback: remove stopword filtering (still deterministic)
-        vec = TfidfVectorizer(
-            stop_words=None,
-            max_features=40000,
-            ngram_range=(1, 2),
-            lowercase=True,
-            token_pattern=r"(?u)\b\w\w+\b",
-        )
-        X = vec.fit_transform(docs)
-        if X.shape[1] == 0:
-            raise ValueError("TF-IDF still produced empty vocabulary. Dataset text may be non-linguistic/too sparse.")
-        return vec, X
+    if X.shape[1] == 0:
+        st.error("❌ TF-IDF produced empty vocabulary (no usable tokens).")
+        st.stop()
+
+    return vec, X
 
 
 # ======================
-# Ranking utilities
+# Ranking helpers
 # ======================
-
 def minmax_series(s: pd.Series) -> np.ndarray:
-    s = s.astype(float).to_numpy()
-    if not np.isfinite(s).any():
-        return np.zeros_like(s, dtype=float)
-    lo = np.nanmin(s)
-    hi = np.nanmax(s)
+    arr = s.astype(float).to_numpy()
+    if not np.isfinite(arr).any():
+        return np.zeros_like(arr, dtype=float)
+    lo = np.nanmin(arr)
+    hi = np.nanmax(arr)
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-        return np.zeros_like(s, dtype=float)
-    return (s - lo) / (hi - lo)
+        return np.zeros_like(arr, dtype=float)
+    return (arr - lo) / (hi - lo)
 
 def make_activity_prompt(activity: str, workout_submode: str) -> str:
     terms = ACTIVITY_TERMS.get(activity, [])
@@ -324,14 +281,12 @@ def filter_new_evergreen(publish_ts_num: pd.Series, toggle: str) -> np.ndarray:
 def apply_feedback_rules(df: pd.DataFrame, scores: np.ndarray, activity: str) -> np.ndarray:
     out = scores.copy()
 
-    # Not-for-activity show downweight
     not_for = st.session_state.get("not_for_activity", {})
     blocked = not_for.get(activity, set())
     if blocked:
         mask = df["show_id"].astype(str).isin(list(blocked)).to_numpy()
         out[mask] *= 0.30
 
-    # dislike reasons influence
     reasons = st.session_state.get("dislike_reason_counts", {})
 
     if reasons.get("Too long", 0) > 0:
@@ -400,11 +355,9 @@ def rank_episodes(
 
     fmask = np.ones(len(df), dtype=bool)
 
-    # language filter
     if lang_filter != "Any":
         fmask &= (df["language"].astype(str) == lang_filter).to_numpy()
 
-    # duration soft filter (keep missing)
     dmin, dmax = duration_range
     dur = pd.to_numeric(df["ep_duration_min"], errors="coerce").to_numpy(dtype=float)
     span = max(5, dmax - dmin)
@@ -412,7 +365,6 @@ def rank_episodes(
     missing = ~np.isfinite(dur)
     fmask &= (soft | missing)
 
-    # new/evergreen
     fmask &= filter_new_evergreen(df["publish_ts_num"], new_toggle)
 
     q_sim = compute_query_sim(vectorizer, X, query)
@@ -454,19 +406,45 @@ def rank_episodes(
 
 
 # ======================
-# LLM summary (on click only)
+# Explainability + UI
 # ======================
+def concise_tags(tag_str: str) -> str:
+    s = safe_str(tag_str)
+    parts = [p.strip() for p in s.replace("|", ",").split(",") if p.strip()]
+    return ", ".join(parts[:6]) + ("…" if len(parts) > 6 else "")
 
+def explain_row(row: pd.Series, activity: str, workout_submode: str, query: str, df_all: pd.DataFrame) -> str:
+    parts = [
+        f"**Interest overlap:** {row.get('InterestFit', 0):.3f} (similar to liked items this session)",
+        f"**Activity fit:** {row.get('ActivityFit', 0):.3f} (terms: `{make_activity_prompt(activity, workout_submode)}`)",
+    ]
+    if query.strip():
+        parts.append(f"**Query match:** {row.get('QueryMatch', 0):.3f} (query: `{query}`)")
+
+    liked_eps = st.session_state.get("liked_episode_ids", set())
+    if liked_eps:
+        liked_rows = df_all[df_all["episode_id"].astype(str).isin(list(liked_eps))]
+        if not liked_rows.empty:
+            ref = liked_rows.iloc[0]
+            parts.append(f"**Because you liked:** “{safe_str(ref.get('show_title'))} — {safe_str(ref.get('ep_title'))}”")
+
+    return "\n\n".join(parts)
+
+
+# ======================
+# Together summary (click only)
+# ======================
 def together_summarize_reviews(show_id: str, reviews_df: pd.DataFrame) -> str:
     show_id = str(show_id)
     cache = st.session_state.setdefault("review_summaries", {})
     if show_id in cache:
         return cache[show_id]
 
-    api_key = _get_together_api_key()
+    api_key = get_together_api_key()
     if not api_key:
-        raise RuntimeError("TOGETHER_API_KEY not set in Streamlit secrets or env var.")
+        raise RuntimeError("TOGETHER_API_KEY is not set (Streamlit secrets or env var).")
 
+    # Join key enforced: podcast_id == show_id
     sub = reviews_df[reviews_df["podcast_id"].astype(str) == show_id].copy()
     if sub.empty:
         cache[show_id] = "No reviews found for this show."
@@ -475,6 +453,7 @@ def together_summarize_reviews(show_id: str, reviews_df: pd.DataFrame) -> str:
     sub["title"] = sub["title"].fillna("")
     sub["content"] = sub["content"].fillna("")
     sub["rating"] = pd.to_numeric(sub["rating"], errors="coerce")
+
     avg_rating = sub["rating"].dropna().mean()
     n = len(sub)
 
@@ -487,9 +466,9 @@ def together_summarize_reviews(show_id: str, reviews_df: pd.DataFrame) -> str:
 
     system = (
         "You summarize podcast reviews. "
-        "Return 2–3 short sentences, balanced, anonymized, no quotes, no names, no user IDs."
+        "Return 2–3 short sentences, balanced, anonymized. "
+        "No quotes, no names, no user identifiers."
     )
-
     rating_line = f"Average rating: {avg_rating:.2f}/5 from {n} reviews." if pd.notna(avg_rating) else f"{n} reviews."
 
     user = (
@@ -508,27 +487,24 @@ def together_summarize_reviews(show_id: str, reviews_df: pd.DataFrame) -> str:
         temperature=0.2,
         max_tokens=160,
     )
+
     text = resp.choices[0].message.content.strip()
     cache[show_id] = text
     return text
 
 
 # ======================
-# UI helpers
+# Session state
 # ======================
-
 def init_state():
     ensure_session_id()
     st.session_state.setdefault("weights", DEFAULT_WEIGHTS.copy())
-
     st.session_state.setdefault("liked_episode_ids", set())
     st.session_state.setdefault("liked_show_ids", set())
     st.session_state.setdefault("disliked_episode_ids", set())
     st.session_state.setdefault("disliked_show_ids", set())
-
     st.session_state.setdefault("not_for_activity", {})
     st.session_state.setdefault("dislike_reason_counts", {})
-
     st.session_state.setdefault("review_summaries", {})
     st.session_state.setdefault("last_selected_episode_id", None)
     st.session_state.setdefault("duration_range", (10, 60))
@@ -541,49 +517,22 @@ def bump_dislike_reason(reason: str):
     d = st.session_state.setdefault("dislike_reason_counts", {})
     d[reason] = int(d.get(reason, 0)) + 1
 
-def concise_tags(tag_str: str) -> str:
-    s = safe_str(tag_str)
-    parts = [p.strip() for p in s.replace("|", ",").split(",") if p.strip()]
-    return ", ".join(parts[:6]) + ("…" if len(parts) > 6 else "")
-
-def explain_row(row: pd.Series, activity: str, workout_submode: str, query: str, df_all: pd.DataFrame) -> str:
-    parts = [
-        f"**Interest overlap:** {row.get('InterestFit', 0):.3f}",
-        f"**Activity fit:** {row.get('ActivityFit', 0):.3f} (terms: `{make_activity_prompt(activity, workout_submode)}`)",
-    ]
-    if query.strip():
-        parts.append(f"**Query match:** {row.get('QueryMatch', 0):.3f} (query: `{query}`)")
-
-    liked_eps = st.session_state.get("liked_episode_ids", set())
-    if liked_eps:
-        liked_rows = df_all[df_all["episode_id"].astype(str).isin(list(liked_eps))]
-        if not liked_rows.empty:
-            ref = liked_rows.iloc[0]
-            parts.append(f"**Because you liked:** “{safe_str(ref.get('show_title'))} — {safe_str(ref.get('ep_title'))}”")
-
-    return "\n\n".join(parts)
-
 
 # ======================
-# Main
+# Main app
 # ======================
-
 def main():
     st.set_page_config(page_title="Podcast Recommender", layout="wide")
     init_state()
 
-    # Resolve actual dataset locations
-    # Try exact filenames you specified; adjust if your actual names differ.
-    csv_path = resolve_file("sample_podcasts.csv")
-    # reviews might be .json or .jsonl; try both
-    try:
-        reviews_path = resolve_file("reviews.json")
-    except FileNotFoundError:
-        reviews_path = resolve_file("reviews.jsonl")
+    # Ensure files exist (clear error if not)
+    file_must_exist(CSV_PATH)
+    if not Path(REVIEWS_PATH_JSON).exists() and not Path(REVIEWS_PATH_JSONL).exists():
+        st.error("Reviews file not found in podcastv2/Data/. Expected reviews.json or reviews.jsonl")
+        st.stop()
 
-    # Load
-    episodes = load_episodes(csv_path)
-    reviews = load_reviews_jsonl(reviews_path)
+    episodes = load_episodes(CSV_PATH)
+    reviews = load_reviews_any()
 
     vectorizer, X = build_vectorizer_and_matrix(episodes)
 
@@ -597,7 +546,7 @@ def main():
         if activity == "Workout":
             workout_submode = st.selectbox("Workout submode", list(WORKOUT_SUBMODES.keys()), index=0)
 
-        query = st.text_input("Search query", value="", placeholder="e.g., productivity, football, AI, history")
+        query = st.text_input("Search query", value="", placeholder="e.g., productivity, football, AI")
 
         dmin, dmax = st.slider("Duration (minutes)", 5, 180, value=(10, 60), step=5)
         st.session_state["duration_range"] = (dmin, dmax)
@@ -629,6 +578,7 @@ def main():
         dislike_clicked = c2.button("👎 Dislike", use_container_width=True)
         not_for_act_clicked = c3.button("🚫 Not for this activity", use_container_width=True)
 
+        # Apply feedback immediately
         if like_clicked or dislike_clicked or not_for_act_clicked:
             if not selected_episode_id:
                 st.warning("Paste an episode_id from a row first.")
@@ -644,19 +594,19 @@ def main():
                     if like_clicked:
                         st.session_state["liked_episode_ids"].add(str(selected_episode_id))
                         st.session_state["liked_show_ids"].add(show_id)
-                        telemetry_log("like", {"activity": activity, "query": query, "episode_id": selected_episode_id, "show_id": show_id})
+                        telemetry_log("like", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": selected_episode_id, "show_id": show_id})
                         st.success("Liked. Ranking updated.")
 
                     if dislike_clicked:
                         st.session_state["disliked_episode_ids"].add(str(selected_episode_id))
                         st.session_state["disliked_show_ids"].add(show_id)
                         bump_dislike_reason(dislike_reason)
-                        telemetry_log("dislike", {"activity": activity, "query": query, "episode_id": selected_episode_id, "show_id": show_id, "dislike_reason": dislike_reason})
+                        telemetry_log("dislike", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": selected_episode_id, "show_id": show_id, "dislike_reason": dislike_reason})
                         st.success("Disliked. Ranking updated.")
 
                     if not_for_act_clicked:
                         add_not_for_activity(activity, show_id)
-                        telemetry_log("not_for_activity", {"activity": activity, "query": query, "episode_id": selected_episode_id, "show_id": show_id})
+                        telemetry_log("not_for_activity", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": selected_episode_id, "show_id": show_id})
                         st.success("Down-weighted for this activity. Ranking updated.")
 
         st.divider()
@@ -714,28 +664,28 @@ def main():
         cols[4].write("" if pd.isna(row["ep_duration_min"]) else f"{float(row['ep_duration_min']):.0f}")
 
         if cols[5].button("▶️", key=f"play_{episode_id}", help="Play (dummy)"):
-            telemetry_log("play", {"activity": activity, "query": query, "episode_id": episode_id, "show_id": show_id})
+            telemetry_log("play", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
             st.toast("Play clicked (dummy). Logged.")
 
         if cols[6].button("💾", key=f"save_{episode_id}", help="Save"):
-            telemetry_log("save", {"activity": activity, "query": query, "episode_id": episode_id, "show_id": show_id})
+            telemetry_log("save", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
             st.toast("Saved. Logged.")
 
         with st.expander("Details (Why this? / Review summary)"):
             if st.button("Why this?", key=f"why_{episode_id}"):
-                telemetry_log("why_opened", {"activity": activity, "query": query, "episode_id": episode_id, "show_id": show_id})
+                telemetry_log("why_opened", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
             st.markdown(explain_row(row, activity, workout_submode, query, episodes))
 
             st.divider()
 
             # STRICT: Together call ONLY on click
             if st.button("Review summary", key=f"sum_{show_id}_{episode_id}"):
-                telemetry_log("review_summary_opened", {"activity": activity, "query": query, "episode_id": episode_id, "show_id": show_id})
+                telemetry_log("review_summary_opened", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id})
                 try:
                     summary = together_summarize_reviews(show_id, reviews)
                     st.markdown(summary)
                 except Exception as e:
-                    telemetry_log("review_summary_error", {"activity": activity, "query": query, "episode_id": episode_id, "show_id": show_id, "error": str(e)})
+                    telemetry_log("review_summary_error", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id, "error": str(e)})
                     st.error(f"Review summary error: {e}")
 
         st.markdown("---")

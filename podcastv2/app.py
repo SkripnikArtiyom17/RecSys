@@ -568,86 +568,6 @@ def bump_dislike_reason(reason: str):
 # ======================
 def main():
     st.set_page_config(page_title="Podcast Recommender", layout="wide")
-    st.markdown("""
-<style>
-/* --- Liquid glass UI (enhanced) --- */
-:root{
-  --glassA: rgba(255,255,255,.10);
-  --glassB: rgba(255,255,255,.06);
-  --stroke: rgba(255,255,255,.14);
-  --stroke2: rgba(255,255,255,.22);
-  --shadow: rgba(0,0,0,.30);
-}
-
-.block-container { padding-top: 1.1rem; padding-bottom: 2rem; }
-h1, h2, h3 { letter-spacing: .2px; }
-
-[data-testid="stSidebar"] > div{
-  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02));
-  border-right: 1px solid var(--stroke);
-  backdrop-filter: blur(16px);
-}
-
-[data-testid="stAppViewContainer"]{
-  background: radial-gradient(1200px 700px at 20% 10%, rgba(120,160,255,.10), transparent 55%),
-              radial-gradient(900px 500px at 85% 30%, rgba(255,120,200,.06), transparent 55%),
-              radial-gradient(900px 600px at 50% 90%, rgba(80,255,200,.05), transparent 60%);
-}
-
-.glass{
-  background: linear-gradient(180deg, var(--glassA), var(--glassB));
-  border: 1px solid var(--stroke);
-  border-radius: 18px;
-  padding: 14px 14px;
-  backdrop-filter: blur(14px);
-  box-shadow: 0 10px 34px var(--shadow);
-}
-
-.soft-hr{ border:none; height:1px; background: rgba(255,255,255,.12); margin: 14px 0; }
-
-[data-testid="stSidebar"] button{
-  width: 100%;
-  border-radius: 999px !important;
-  border: 1px solid rgba(255,255,255,.18) !important;
-  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.05)) !important;
-  box-shadow: 0 8px 22px rgba(0,0,0,.22) !important;
-  padding: .65rem .85rem !important;
-  line-height: 1.05 !important;
-  transition: transform .06s ease, border-color .12s ease, filter .12s ease;
-}
-[data-testid="stSidebar"] button:hover{
-  border-color: rgba(255,255,255,.30) !important;
-  filter: brightness(1.05);
-}
-[data-testid="stSidebar"] button:active{ transform: translateY(1px); }
-
-[data-testid="stSidebar"] button p{
-  text-align:center !important;
-  white-space: pre-wrap !important;
-  font-size: 13px !important;
-  margin: 0 !important;
-}
-
-.sel-badge{
-  display:inline-block;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--stroke2);
-  background: rgba(255,255,255,.06);
-  font-size: 12px;
-  opacity: .92;
-  margin-top: 8px;
-}
-
-[data-testid="stExpander"] > details{
-  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 16px;
-}
-[data-testid="stExpander"] summary{ padding: .35rem .55rem; }
-</style>
-""", unsafe_allow_html=True)
-
     init_state()
 
     # Ensure files exist (clear error if not)
@@ -664,78 +584,35 @@ h1, h2, h3 { letter-spacing: .2px; }
     # Sidebar
     with st.sidebar:
         st.header("Choose a podcast that suits your taste")
-        # Activity – buttons (emoji + label)
-        st.markdown('<div class="glass">', unsafe_allow_html=True)
-        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
-        st.subheader("Activity")
 
-        ACTIVITY_CHOICES = [
-            ("Commute", "🚆"),
-            ("Workout", "🏋️"),
-            ("Focus / Deep work", "🧠"),
-            ("Chores / Cleaning", "🧽"),
-            ("Relax / Wind down", "🫧"),
-        ]
+        activity = st.selectbox("Activity", list(ACTIVITY_TERMS.keys()), index=1)
 
-        cols_a = st.columns(3)
-        for i, (label, emoji) in enumerate(ACTIVITY_CHOICES):
-            with cols_a[i % 3]:
-                if st.button(f"{emoji}\n\n{label}", key=f"act_{label}"):
-                    st.session_state["ui_activity"] = label
-
-        activity = st.session_state.get("ui_activity", ACTIVITY_CHOICES[1][0])
-        st.markdown(f'<div class="sel-badge">Selected: {activity}</div>', unsafe_allow_html=True)
-
-        # Workout submode – buttons (emoji + label)
         workout_submode = "Easy"
         if activity == "Workout":
-            st.subheader("Workout submode")
-            SUBMODES = [("Easy", "🙂"), ("HIIT", "🔥"), ("Strength", "💪"), ("Run", "🏃")]
-            cols_s = st.columns(2)
-            for i, (label, emoji) in enumerate(SUBMODES):
-                with cols_s[i % 2]:
-                    if st.button(f"{emoji}\n\n{label}", key=f"sub_{label}"):
-                        st.session_state["ui_workout_submode"] = label
-            workout_submode = st.session_state.get("ui_workout_submode", "Easy")
-            st.markdown(f'<div class="sel-badge">Submode: {workout_submode}</div>', unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Search query removed (UI); keep variable for logic
+            workout_submode = st.selectbox("Workout submode", list(WORKOUT_SUBMODES.keys()), index=0)
+        # Search query removed (UI)
         query = ""
 
         dmin, dmax = st.slider("Duration (minutes)", 5, 180, value=(10, 60), step=5)
         st.session_state["duration_range"] = (dmin, dmax)
-        # Language – flag buttons (emoji + label)
-        st.markdown('<div class="glass">', unsafe_allow_html=True)
-        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
-        st.subheader("Language")
 
         langs = sorted([l for l in episodes["language"].dropna().astype(str).unique().tolist() if l.strip()])
         FLAG = {
-            "en": "🇺🇸", "es": "🇪🇸", "de": "🇩🇪", "fr": "🇫🇷",
-            "it": "🇮🇹", "ru": "🇷🇺", "pt": "🇵🇹", "nl": "🇳🇱",
-            "sv": "🇸🇪", "no": "🇳🇴", "da": "🇩🇰", "fi": "🇫🇮",
-            "tr": "🇹🇷", "pl": "🇵🇱", "uk": "🇺🇦", "ja": "🇯🇵",
-            "ko": "🇰🇷", "zh": "🇨🇳",
+            "en": "🇺🇸 EN", "es": "🇪🇸 ES", "de": "🇩🇪 DE", "fr": "🇫🇷 FR",
+            "it": "🇮🇹 IT", "ru": "🇷🇺 RU", "pt": "🇵🇹 PT", "nl": "🇳🇱 NL",
+            "sv": "🇸🇪 SV", "no": "🇳🇴 NO", "da": "🇩🇰 DA", "fi": "🇫🇮 FI",
+            "tr": "🇹🇷 TR", "pl": "🇵🇱 PL", "uk": "🇺🇦 UK", "ja": "🇯🇵 JA",
+            "ko": "🇰🇷 KO", "zh": "🇨🇳 ZH",
         }
-
-        lang_buttons = ["Any"] + langs
-        cols_l = st.columns(3)
-        for i, code in enumerate(lang_buttons):
-            flag = "🌐" if code == "Any" else FLAG.get(code.lower(), "🏳️")
-            label = "Any" if code == "Any" else code.upper()
-            with cols_l[i % 3]:
-                if st.button(f"{flag}\n\n{label}", key=f"lang_{code}"):
-                    st.session_state["ui_lang_filter"] = code
-
-        lang_filter = st.session_state.get("ui_lang_filter", "Any")
-        st.markdown(f'<div class="sel-badge">Language: {lang_filter}</div>', unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-        # New/Evergreen toggle removed (UI); keep neutral default for logic
+        lang_filter = st.selectbox(
+            "Language",
+            ["Any"] + langs,
+            index=0,
+            format_func=lambda x: "🌐 Any" if x == "Any" else FLAG.get(str(x).lower(), f"🏳️ {str(x).upper()}"),
+        )
+        # New/Evergreen toggle removed (UI)
         new_toggle = "Any"
-        # Diversity control removed (UI); keep default value for logic
+        # Diversity control removed (UI)
         lam = 0.65
 
         st.divider()
@@ -746,26 +623,12 @@ h1, h2, h3 { letter-spacing: .2px; }
             value=st.session_state.get("last_selected_episode_id") or "",
             placeholder="episode_id"
         ).strip()
-        # Dislike reason – buttons (emoji + label)
-        st.markdown('<div class="glass">', unsafe_allow_html=True)
-        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
-        st.subheader("Dislike reason")
 
-        DISLIKE_REASONS = [
-            ("Too long", "⏳"),
-            ("Too intense", "🔥"),
-            ("Not my topics", "🧩"),
-            ("Low quality", "📉"),
-            ("Other", "❓"),
-        ]
-        cols_r = st.columns(2)
-        for i, (label, emoji) in enumerate(DISLIKE_REASONS):
-            with cols_r[i % 2]:
-                if st.button(f"{emoji}\n\n{label}", key=f"dr_{label}"):
-                    st.session_state["ui_dislike_reason"] = label
-        dislike_reason = st.session_state.get("ui_dislike_reason", DISLIKE_REASONS[0][0])
-
-        st.markdown("</div>", unsafe_allow_html=True)
+        dislike_reason = st.selectbox(
+            "Dislike reason",
+            ["Too long", "Too intense", "Not my topics", "Low quality", "Other"],
+            index=0
+        )
 
         c1, c2, c3 = st.columns(3)
         like_clicked = c1.button("👍 Like", use_container_width=True)
@@ -845,8 +708,6 @@ h1, h2, h3 { letter-spacing: .2px; }
     header[6].markdown("**Save**")
 
     for _, row in ranked.reset_index(drop=True).iterrows():
-        st.markdown('<div class="glass">', unsafe_allow_html=True)
-        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
         episode_id = str(row["episode_id"])
         show_id = str(row["show_id"])
 
@@ -882,8 +743,11 @@ h1, h2, h3 { letter-spacing: .2px; }
                     telemetry_log("review_summary_error", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id, "error": str(e)})
                     st.error(f"Review summary error: {e}")
 
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown('<hr class="soft-hr">', unsafe_allow_html=True)
+        st.markdown(
+            "<div style='height:8px'></div>"
+            "<hr style='border:none;height:1px;background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.20), rgba(255,255,255,0));margin: 6px 0 12px 0;'/>",
+            unsafe_allow_html=True,
+        )
 
     st.caption("Join key enforced: reviews.podcast_id == episodes.show_id. No synthetic data; offline ranking.")
 

@@ -553,7 +553,6 @@ def bump_dislike_reason(reason: str):
 def main():
     st.set_page_config(page_title="Podcast Recommender", layout="wide")
     init_state()
-    show_key_debug()
 
     # Ensure files exist (clear error if not)
     file_must_exist(CSV_PATH)

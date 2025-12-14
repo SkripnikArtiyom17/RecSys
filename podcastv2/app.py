@@ -570,27 +570,81 @@ def main():
     st.set_page_config(page_title="Podcast Recommender", layout="wide")
     st.markdown("""
 <style>
-/* --- Liquid glass UI --- */
-:root { --glass: rgba(255,255,255,.08); --glass2: rgba(255,255,255,.12); --stroke: rgba(255,255,255,.14); }
-
-.block-container { padding-top: 1.25rem; }
-
-[data-testid="stSidebar"] > div {
-  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
-  border-right: 1px solid var(--stroke);
-  backdrop-filter: blur(14px);
+/* --- Liquid glass UI (enhanced) --- */
+:root{
+  --glassA: rgba(255,255,255,.10);
+  --glassB: rgba(255,255,255,.06);
+  --stroke: rgba(255,255,255,.14);
+  --stroke2: rgba(255,255,255,.22);
+  --shadow: rgba(0,0,0,.30);
 }
 
-.glass {
-  background: linear-gradient(180deg, var(--glass2), var(--glass));
+.block-container { padding-top: 1.1rem; padding-bottom: 2rem; }
+h1, h2, h3 { letter-spacing: .2px; }
+
+[data-testid="stSidebar"] > div{
+  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02));
+  border-right: 1px solid var(--stroke);
+  backdrop-filter: blur(16px);
+}
+
+[data-testid="stAppViewContainer"]{
+  background: radial-gradient(1200px 700px at 20% 10%, rgba(120,160,255,.10), transparent 55%),
+              radial-gradient(900px 500px at 85% 30%, rgba(255,120,200,.06), transparent 55%),
+              radial-gradient(900px 600px at 50% 90%, rgba(80,255,200,.05), transparent 60%);
+}
+
+.glass{
+  background: linear-gradient(180deg, var(--glassA), var(--glassB));
   border: 1px solid var(--stroke);
   border-radius: 18px;
   padding: 14px 14px;
   backdrop-filter: blur(14px);
-  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  box-shadow: 0 10px 34px var(--shadow);
 }
 
-.soft-hr { border: none; height: 1px; background: rgba(255,255,255,.12); margin: 14px 0; }
+.soft-hr{ border:none; height:1px; background: rgba(255,255,255,.12); margin: 14px 0; }
+
+[data-testid="stSidebar"] button{
+  width: 100%;
+  border-radius: 999px !important;
+  border: 1px solid rgba(255,255,255,.18) !important;
+  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.05)) !important;
+  box-shadow: 0 8px 22px rgba(0,0,0,.22) !important;
+  padding: .65rem .85rem !important;
+  line-height: 1.05 !important;
+  transition: transform .06s ease, border-color .12s ease, filter .12s ease;
+}
+[data-testid="stSidebar"] button:hover{
+  border-color: rgba(255,255,255,.30) !important;
+  filter: brightness(1.05);
+}
+[data-testid="stSidebar"] button:active{ transform: translateY(1px); }
+
+[data-testid="stSidebar"] button p{
+  text-align:center !important;
+  white-space: pre-wrap !important;
+  font-size: 13px !important;
+  margin: 0 !important;
+}
+
+.sel-badge{
+  display:inline-block;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke2);
+  background: rgba(255,255,255,.06);
+  font-size: 12px;
+  opacity: .92;
+  margin-top: 8px;
+}
+
+[data-testid="stExpander"] > details{
+  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 16px;
+}
+[data-testid="stExpander"] summary{ padding: .35rem .55rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -612,6 +666,7 @@ def main():
         st.header("Choose a podcast that suits your taste")
         # Activity – buttons (emoji + label)
         st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
         st.subheader("Activity")
 
         ACTIVITY_CHOICES = [
@@ -629,6 +684,7 @@ def main():
                     st.session_state["ui_activity"] = label
 
         activity = st.session_state.get("ui_activity", ACTIVITY_CHOICES[1][0])
+        st.markdown(f'<div class="sel-badge">Selected: {activity}</div>', unsafe_allow_html=True)
 
         # Workout submode – buttons (emoji + label)
         workout_submode = "Easy"
@@ -641,6 +697,7 @@ def main():
                     if st.button(f"{emoji}\n\n{label}", key=f"sub_{label}"):
                         st.session_state["ui_workout_submode"] = label
             workout_submode = st.session_state.get("ui_workout_submode", "Easy")
+            st.markdown(f'<div class="sel-badge">Submode: {workout_submode}</div>', unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -651,6 +708,7 @@ def main():
         st.session_state["duration_range"] = (dmin, dmax)
         # Language – flag buttons (emoji + label)
         st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
         st.subheader("Language")
 
         langs = sorted([l for l in episodes["language"].dropna().astype(str).unique().tolist() if l.strip()])
@@ -672,6 +730,7 @@ def main():
                     st.session_state["ui_lang_filter"] = code
 
         lang_filter = st.session_state.get("ui_lang_filter", "Any")
+        st.markdown(f'<div class="sel-badge">Language: {lang_filter}</div>', unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
         # New/Evergreen toggle removed (UI); keep neutral default for logic
@@ -689,6 +748,7 @@ def main():
         ).strip()
         # Dislike reason – buttons (emoji + label)
         st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
         st.subheader("Dislike reason")
 
         DISLIKE_REASONS = [
@@ -786,6 +846,7 @@ def main():
 
     for _, row in ranked.reset_index(drop=True).iterrows():
         st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.markdown('<div style="opacity:.85; font-size:12px; margin-bottom:6px;">Episode</div>', unsafe_allow_html=True)
         episode_id = str(row["episode_id"])
         show_id = str(row["show_id"])
 

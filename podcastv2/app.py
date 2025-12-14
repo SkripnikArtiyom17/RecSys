@@ -65,33 +65,21 @@ REVIEW_FIELDS = ["podcast_id", "title", "content", "rating", "author_id", "creat
 # Together key (secure)
 # ======================
 def get_together_api_key() -> str:
-    # Single source of truth: Streamlit Secrets (prevents stale env keys)
+    # Single source of truth: Streamlit Secrets
     if "TOGETHER_API_KEY" not in st.secrets:
         raise RuntimeError("TOGETHER_API_KEY is missing in Streamlit Secrets (App Settings → Secrets).")
 
-def show_runtime_debug_badges():
-    # Which app.py is actually running (prevents editing the wrong file)
-    st.sidebar.caption(f"Running file: {Path(__file__).resolve()}")
-
-    # Key fingerprint (never shows the full key)
-    try:
-        k = get_together_api_key()
-        sha16 = hashlib.sha256(k.encode("utf-8")).hexdigest()[:16]
-        st.sidebar.caption(f"Together key: loaded ✅ | len={len(k)} | prefix={k[:6]} | sha16={sha16}")
-    except Exception as e:
-        st.sidebar.caption("Together key: loaded ❌")
-        st.sidebar.error(str(e))
-
-
     k = str(st.secrets["TOGETHER_API_KEY"])
+    k_stripped = k.strip()
 
-    # Hard-fail on whitespace/newlines (common copy/paste issue)
-    if k != k.strip() or "
-" in k or "
-" in k:
-        raise RuntimeError("TOGETHER_API_KEY contains whitespace/newlines. Re-paste it cleanly in Secrets.")
+    # Hard-fail on whitespace/newlines (copy/paste issues)
+    if k != k_stripped:
+        raise RuntimeError("TOGETHER_API_KEY has leading/trailing whitespace. Re-paste it cleanly in Secrets.")
+    if any(ch in k for ch in ("\n", "\r")):
+        raise RuntimeError("TOGETHER_API_KEY contains newline characters. Re-paste it cleanly in Secrets.")
 
-    return k.strip()
+    return k_stripped
+
 
 
 # ======================

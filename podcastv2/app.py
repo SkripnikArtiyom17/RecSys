@@ -568,6 +568,32 @@ def bump_dislike_reason(reason: str):
 # ======================
 def main():
     st.set_page_config(page_title="Podcast Recommender", layout="wide")
+    st.markdown("""
+<style>
+/* --- Liquid glass UI --- */
+:root { --glass: rgba(255,255,255,.08); --glass2: rgba(255,255,255,.12); --stroke: rgba(255,255,255,.14); }
+
+.block-container { padding-top: 1.25rem; }
+
+[data-testid="stSidebar"] > div {
+  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+  border-right: 1px solid var(--stroke);
+  backdrop-filter: blur(14px);
+}
+
+.glass {
+  background: linear-gradient(180deg, var(--glass2), var(--glass));
+  border: 1px solid var(--stroke);
+  border-radius: 18px;
+  padding: 14px 14px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+
+.soft-hr { border: none; height: 1px; background: rgba(255,255,255,.12); margin: 14px 0; }
+</style>
+""", unsafe_allow_html=True)
+
     init_state()
 
     # Ensure files exist (clear error if not)
@@ -583,25 +609,75 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.header("Controls")
+        st.header("Choose a podcast that suits your taste")
+        # Activity – buttons (emoji + label)
+        st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.subheader("Activity")
 
-        activity = st.selectbox("Activity", list(ACTIVITY_TERMS.keys()), index=1)
+        ACTIVITY_CHOICES = [
+            ("Commute", "🚆"),
+            ("Workout", "🏋️"),
+            ("Focus / Deep work", "🧠"),
+            ("Chores / Cleaning", "🧽"),
+            ("Relax / Wind down", "🫧"),
+        ]
 
+        cols_a = st.columns(3)
+        for i, (label, emoji) in enumerate(ACTIVITY_CHOICES):
+            with cols_a[i % 3]:
+                if st.button(f"{emoji}\n\n{label}", key=f"act_{label}"):
+                    st.session_state["ui_activity"] = label
+
+        activity = st.session_state.get("ui_activity", ACTIVITY_CHOICES[1][0])
+
+        # Workout submode – buttons (emoji + label)
         workout_submode = "Easy"
         if activity == "Workout":
-            workout_submode = st.selectbox("Workout submode", list(WORKOUT_SUBMODES.keys()), index=0)
+            st.subheader("Workout submode")
+            SUBMODES = [("Easy", "🙂"), ("HIIT", "🔥"), ("Strength", "💪"), ("Run", "🏃")]
+            cols_s = st.columns(2)
+            for i, (label, emoji) in enumerate(SUBMODES):
+                with cols_s[i % 2]:
+                    if st.button(f"{emoji}\n\n{label}", key=f"sub_{label}"):
+                        st.session_state["ui_workout_submode"] = label
+            workout_submode = st.session_state.get("ui_workout_submode", "Easy")
 
-        query = st.text_input("Search query", value="", placeholder="e.g., productivity, football, AI")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Search query removed (UI); keep variable for logic
+        query = ""
 
         dmin, dmax = st.slider("Duration (minutes)", 5, 180, value=(10, 60), step=5)
         st.session_state["duration_range"] = (dmin, dmax)
+        # Language – flag buttons (emoji + label)
+        st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.subheader("Language")
 
         langs = sorted([l for l in episodes["language"].dropna().astype(str).unique().tolist() if l.strip()])
-        lang_filter = st.selectbox("Language", ["Any"] + langs, index=0)
+        FLAG = {
+            "en": "🇺🇸", "es": "🇪🇸", "de": "🇩🇪", "fr": "🇫🇷",
+            "it": "🇮🇹", "ru": "🇷🇺", "pt": "🇵🇹", "nl": "🇳🇱",
+            "sv": "🇸🇪", "no": "🇳🇴", "da": "🇩🇰", "fi": "🇫🇮",
+            "tr": "🇹🇷", "pl": "🇵🇱", "uk": "🇺🇦", "ja": "🇯🇵",
+            "ko": "🇰🇷", "zh": "🇨🇳",
+        }
 
-        new_toggle = st.selectbox("New / Evergreen", ["Any", "New", "Evergreen"], index=0)
+        lang_buttons = ["Any"] + langs
+        cols_l = st.columns(3)
+        for i, code in enumerate(lang_buttons):
+            flag = "🌐" if code == "Any" else FLAG.get(code.lower(), "🏳️")
+            label = "Any" if code == "Any" else code.upper()
+            with cols_l[i % 3]:
+                if st.button(f"{flag}\n\n{label}", key=f"lang_{code}"):
+                    st.session_state["ui_lang_filter"] = code
 
-        lam = st.slider("Diversity (λ)", 0.0, 1.0, value=0.65, step=0.05)
+        lang_filter = st.session_state.get("ui_lang_filter", "Any")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        # New/Evergreen toggle removed (UI); keep neutral default for logic
+        new_toggle = "Any"
+        # Diversity control removed (UI); keep default value for logic
+        lam = 0.65
 
         st.divider()
         st.subheader("Feedback (sidebar-only)")
@@ -611,12 +687,25 @@ def main():
             value=st.session_state.get("last_selected_episode_id") or "",
             placeholder="episode_id"
         ).strip()
+        # Dislike reason – buttons (emoji + label)
+        st.markdown('<div class="glass">', unsafe_allow_html=True)
+        st.subheader("Dislike reason")
 
-        dislike_reason = st.selectbox(
-            "Dislike reason",
-            ["Too long", "Too intense", "Not my topics", "Low quality", "Other"],
-            index=0
-        )
+        DISLIKE_REASONS = [
+            ("Too long", "⏳"),
+            ("Too intense", "🔥"),
+            ("Not my topics", "🧩"),
+            ("Low quality", "📉"),
+            ("Other", "❓"),
+        ]
+        cols_r = st.columns(2)
+        for i, (label, emoji) in enumerate(DISLIKE_REASONS):
+            with cols_r[i % 2]:
+                if st.button(f"{emoji}\n\n{label}", key=f"dr_{label}"):
+                    st.session_state["ui_dislike_reason"] = label
+        dislike_reason = st.session_state.get("ui_dislike_reason", DISLIKE_REASONS[0][0])
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns(3)
         like_clicked = c1.button("👍 Like", use_container_width=True)
@@ -659,7 +748,6 @@ def main():
 
     # Main panel
     st.title("Activity-Aware Podcast Recommender")
-    st.caption("Offline ranking (TF-IDF + weighted model + MMR). Together called ONLY on Review summary click.")
 
     ranked = rank_episodes(
         episodes, vectorizer, X,
@@ -686,7 +774,6 @@ def main():
     })
 
     st.subheader("Recommendations")
-    st.caption("Each row is an episode. Copy episode_id into the sidebar to give feedback.")
 
     header = st.columns([2.2, 2.2, 1.3, 0.9, 0.9, 0.9, 0.9])
     header[0].markdown("**Show / Publisher**")
@@ -698,6 +785,7 @@ def main():
     header[6].markdown("**Save**")
 
     for _, row in ranked.reset_index(drop=True).iterrows():
+        st.markdown('<div class="glass">', unsafe_allow_html=True)
         episode_id = str(row["episode_id"])
         show_id = str(row["show_id"])
 
@@ -733,7 +821,8 @@ def main():
                     telemetry_log("review_summary_error", {"activity": activity, "workout_submode": workout_submode, "query": query, "episode_id": episode_id, "show_id": show_id, "error": str(e)})
                     st.error(f"Review summary error: {e}")
 
-        st.markdown("---")
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown('<hr class="soft-hr">', unsafe_allow_html=True)
 
     st.caption("Join key enforced: reviews.podcast_id == episodes.show_id. No synthetic data; offline ranking.")
 

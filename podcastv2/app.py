@@ -65,21 +65,31 @@ REVIEW_FIELDS = ["podcast_id", "title", "content", "rating", "author_id", "creat
 # Together key (secure)
 # ======================
 def get_together_api_key() -> str:
-    # Single source of truth: Streamlit Secrets
+    # Use Streamlit Secrets ONLY (prevents stale env keys)
     if "TOGETHER_API_KEY" not in st.secrets:
-        raise RuntimeError("TOGETHER_API_KEY is missing in Streamlit Secrets (App Settings → Secrets).")
+        raise RuntimeError("TOGETHER_API_KEY missing in Streamlit Secrets (Settings → Secrets).")
 
-    k = str(st.secrets["TOGETHER_API_KEY"])
-    k_stripped = k.strip()
+def show_key_debug():
+    # Shows which file is running + safe fingerprint for the loaded Together key
+    st.sidebar.caption(f"Running: {Path(__file__).resolve()}")
+    try:
+        k = get_together_api_key()
+        sha16 = hashlib.sha256(k.encode("utf-8")).hexdigest()[:16]
+        st.sidebar.caption(f"Together key ✅ | len={len(k)} | prefix={k[:6]} | sha16={sha16}")
+    except Exception as e:
+        st.sidebar.caption("Together key ❌")
+        st.sidebar.error(str(e))
 
-    # Hard-fail on whitespace/newlines (copy/paste issues)
-    if k != k_stripped:
-        raise RuntimeError("TOGETHER_API_KEY has leading/trailing whitespace. Re-paste it cleanly in Secrets.")
-    if any(ch in k for ch in ("\n", "\r")):
+
+    k = str(st.secrets["TOGETHER_API_KEY"]).strip()
+
+    # Guard against copy/paste issues
+    if any(ch in k for ch in ("
+", "
+")):
         raise RuntimeError("TOGETHER_API_KEY contains newline characters. Re-paste it cleanly in Secrets.")
 
-    return k_stripped
-
+    return k
 
 
 # ======================

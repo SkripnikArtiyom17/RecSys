@@ -70,7 +70,6 @@ def get_together_api_key() -> str:
         raise RuntimeError("TOGETHER_API_KEY missing in Streamlit Secrets (Settings → Secrets).")
 
 def show_key_debug():
-    # Shows which file is running + safe fingerprint for the loaded Together key
     st.sidebar.caption(f"Running: {Path(__file__).resolve()}")
     try:
         k = get_together_api_key()
@@ -83,10 +82,8 @@ def show_key_debug():
 
     k = str(st.secrets["TOGETHER_API_KEY"]).strip()
 
-    # Guard against copy/paste issues
-    if any(ch in k for ch in ("
-", "
-")):
+    # Guard against copy/paste issues (no string escape literals to avoid paste corruption)
+    if 10 in (ord(ch) for ch in k) or 13 in (ord(ch) for ch in k):
         raise RuntimeError("TOGETHER_API_KEY contains newline characters. Re-paste it cleanly in Secrets.")
 
     return k
@@ -714,3 +711,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

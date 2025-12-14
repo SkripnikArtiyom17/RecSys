@@ -274,14 +274,30 @@ def make_activity_prompt(activity: str, workout_submode: str) -> str:
 def compute_query_sim(vectorizer: TfidfVectorizer, X, query: str) -> np.ndarray:
     if not query.strip():
         return np.zeros(X.shape[0], dtype=float)
-    qv = vectorizer.transform([query])
-    return cosine_similarity(X, qv).reshape(-1).astype(float)
+    qv = vectorizer.transform([query])  # (1, n_features)
+    sims = cosine_similarity(X, qv).ravel()
+    return sims.astype(float)
 
-def compute_interest_profile_sim(X, liked_idx: List[int]) -> np.ndarray:
+def compute_interest_profile_sim(X, liked_idx: list[int]) -> np.ndarray:
+    # Empty → zero similarity
     if not liked_idx:
         return np.zeros(X.shape[0], dtype=float)
-    profile = X[liked_idx].mean(axis=0)
-    return cosine_similarity(X, profile).reshape(-1).astype(float)
+
+    # Ensure indices are valid ints
+    liked_idx = [int(i) for i in liked_idx if i is not None]
+    if len(liked_idx) == 0:
+        return np.zeros(X.shape[0], dtype=float)
+
+    liked_mat = X[liked_idx]          # (k, n_features)
+    profile = liked_mat.mean(axis=0)  # may be matrix-like
+
+    # Convert profile to a plain 2D ndarray (1, n_features)
+    if hasattr(profile, "A"):         # sparse/matrix -> ndarray
+        profile = profile.A
+    profile = np.asarray(profile).reshape(1, -1)
+
+    sims = cosine_similarity(X, profile).ravel()
+    return sims.astype(float)
 
 def duration_fit(ep_dur: pd.Series, target_min: int, target_max: int) -> np.ndarray:
     d = pd.to_numeric(ep_dur, errors="coerce").to_numpy(dtype=float)

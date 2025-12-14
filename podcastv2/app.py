@@ -7,6 +7,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+from together import Together
 
 import numpy as np
 import pandas as pd

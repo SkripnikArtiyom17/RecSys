@@ -12,17 +12,15 @@ import streamlit as st
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-
 from pathlib import Path
 import streamlit as st
 
-st.write("CWD:", Path.cwd())
-st.write("Root files:", [p.name for p in Path.cwd().iterdir()])
+for folder in ["podcastv2", "podcast", "Midtermproject"]:
+    p = Path(folder)
+    st.write(folder, "exists:", p.exists(), "is_dir:", p.is_dir())
+    if p.exists() and p.is_dir():
+        st.write(f"{folder}/ files:", [x.name for x in p.iterdir()])
 
-data_dir = Path("Data")
-st.write("Data/ exists:", data_dir.exists(), "is_dir:", data_dir.is_dir())
-if data_dir.exists() and data_dir.is_dir():
-    st.write("Data/ files:", [p.name for p in data_dir.iterdir()])
 
 
 # ==========

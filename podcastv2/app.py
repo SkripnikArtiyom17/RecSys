@@ -7,7 +7,6 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-from together import Together
 
 import numpy as np
 import pandas as pd
@@ -15,6 +14,7 @@ import streamlit as st
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from together import Together
 
 
 # =========================
@@ -66,7 +66,7 @@ REVIEW_FIELDS = ["podcast_id", "title", "content", "rating", "author_id", "creat
 # Together key (secure)
 # ======================
 def get_together_api_key() -> str:
-    # Use Streamlit Secrets ONLY (prevents stale env keys)
+    # Streamlit Secrets ONLY (prevents stale env keys)
     if "TOGETHER_API_KEY" not in st.secrets:
         raise RuntimeError("TOGETHER_API_KEY missing in Streamlit Secrets (Settings → Secrets).")
 
@@ -83,7 +83,7 @@ def show_key_debug():
 
     k = str(st.secrets["TOGETHER_API_KEY"]).strip()
 
-    # Guard against copy/paste issues (no string escape literals to avoid paste corruption)
+    # Newline-safe check without escape literals
     if 10 in (ord(ch) for ch in k) or 13 in (ord(ch) for ch in k):
         raise RuntimeError("TOGETHER_API_KEY contains newline characters. Re-paste it cleanly in Secrets.")
 
@@ -495,7 +495,6 @@ def together_summarize_reviews(show_id: str, reviews_df: pd.DataFrame) -> str:
         "Return only the 2–3 sentence summary."
     )
 
-    from together import Together
     client = Together(api_key=api_key)
 
     resp = client.chat.completions.create(
@@ -541,6 +540,7 @@ def bump_dislike_reason(reason: str):
 def main():
     st.set_page_config(page_title="Podcast Recommender", layout="wide")
     init_state()
+    show_key_debug()
 
     # Ensure files exist (clear error if not)
     file_must_exist(CSV_PATH)
@@ -712,4 +712,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

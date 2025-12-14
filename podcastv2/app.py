@@ -17,8 +17,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 # Constants
 # ==========
 
-DATA_CSV_PATH = "sample_podcasts.csv"
-REVIEWS_JSONL_PATH = "reviews.json"
+DATA_CSV_PATH = "Data/sample_podcasts.csv"
+REVIEWS_JSONL_PATH = "Data/reviews.json"
 TELEMETRY_PATH = "telemetry.csv"
 
 # NOTE: For security, do NOT hardcode API keys in code.

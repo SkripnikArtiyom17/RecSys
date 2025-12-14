@@ -148,16 +148,18 @@ def load_episodes(csv_path: str) -> pd.DataFrame:
     # Robust delimiter detection
     df = pd.read_csv(csv_path, sep=None, engine="python")
 
-    # If the CSV was parsed into a single column (common delimiter issue), fail loudly with hint
-    if df.shape[1] == 1 and (REQ_COLS[0] not in df.columns):
-        raise ValueError(
-            "CSV appears to be parsed as a single column. "
-            "Likely wrong delimiter/encoding. Ensure a proper header row and delimiter."
-        )
+    # Normalize column names (fixes " show_title " / BOM issues)
+    df.columns = [str(c).strip().replace("\ufeff", "") for c in df.columns]
 
+    # Validate required columns
     missing = [c for c in REQ_COLS if c not in df.columns]
     if missing:
-        raise ValueError(f"CSV missing required columns: {missing}. Found: {list(df.columns)}")
+        # Debug: show first columns + first row
+        raise ValueError(
+            f"CSV missing required columns: {missing}.\n"
+            f"Found columns: {list(df.columns)}\n"
+            f"Head row: {df.head(1).to_dict(orient='records')}"
+        )
 
     df = df.copy()
 
@@ -168,17 +170,34 @@ def load_episodes(csv_path: str) -> pd.DataFrame:
     df["publish_ts_num"] = pd.to_numeric(df["publish_ts"], errors="coerce")
 
     # Fill text fields safely
-    for c in ["tags", "ep_desc", "ep_title", "show_title", "publisher", "language"]:
-        df[c] = df[c].fillna("")
+    text_cols = ["tags", "ep_desc", "ep_title", "show_title", "publisher", "language"]
+    for c in text_cols:
+        df[c] = df[c].fillna("").astype(str)
+
+    # IMPORTANT: sometimes fields are literally "nan" strings after coercion
+    for c in text_cols:
+        df[c] = df[c].replace("nan", "", regex=False).replace("None", "", regex=False)
 
     # Combined text
     df["text"] = (
-        df["show_title"].astype(str) + " " +
-        df["publisher"].astype(str) + " " +
-        df["tags"].astype(str) + " " +
-        df["ep_title"].astype(str) + " " +
-        df["ep_desc"].astype(str)
-    )
+        df["show_title"].str.strip() + " " +
+        df["publisher"].str.strip() + " " +
+        df["tags"].str.strip() + " " +
+        df["ep_title"].str.strip() + " " +
+        df["ep_desc"].str.strip()
+    ).str.strip()
+
+    # Diagnostics if empty
+    non_empty = int((df["text"].str.len() > 0).sum())
+    if non_empty == 0:
+        # Show evidence directly in the error to avoid guessing
+        sample = df[text_cols].head(5).to_dict(orient="records")
+        counts = {c: int((df[c].str.strip() != "").sum()) for c in text_cols}
+        raise ValueError(
+            "Loaded CSV but all text fields are empty.\n"
+            f"Non-empty counts per text col: {counts}\n"
+            f"Sample rows (text cols only): {sample}"
+        )
 
     return df
 
